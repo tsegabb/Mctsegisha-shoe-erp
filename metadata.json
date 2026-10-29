@@ -1,0 +1,6 @@
+{
+  "name": "SoleFlow Shoe ERP",
+  "description": "A comprehensive multi-branch shoe stock management platform featuring Point of Sale, inventory tracking, variant & size management, purchase orders, sales reporting, and warehouse operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

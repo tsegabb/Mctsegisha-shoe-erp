@@ -1,0 +1,10 @@
+# SoleFlow Shoe ERP Robots Configuration
+User-agent: *
+Allow: /
+Allow: /login
+Allow: /sitemap.xml
+Disallow: /api/
+Disallow: /admin/
+Disallow: /dashboard/
+
+Sitemap: https://soleflow.app/sitemap.xml

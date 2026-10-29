@@ -1,0 +1,16 @@
+{
+  "threshold": 10,
+  "adminEmail": "tsegabbekele@gmail.com",
+  "enableAutoEmail": true,
+  "emailMethod": "sandbox",
+  "smtpHost": "smtp.gmail.com",
+  "smtpPort": 465,
+  "smtpUser": "",
+  "smtpPass": "",
+  "smtpFrom": "alerts@shoetracker.com",
+  "enableTelegram": true,
+  "telegramToken": "8802584505:AAEDQ5LXJP_vy6V_WQYCq6tYEAj5Bk9NGRA",
+  "telegramChatId": "8802584505",
+  "enableDailyReportTelegram": true,
+  "dailyReportTime": "20:00"
+}
