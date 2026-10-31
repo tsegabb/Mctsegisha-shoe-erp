@@ -1,94 +1,72 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import { createServer as createViteServer } from 'vite';
-import { fileURLToPath } from 'url';
-import { initializeDatabase } from './src/config/db.ts';
+import express from 'express';
+import helmet from 'helmet';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { assertSchemaReady, closePool, pingDb } from './src/config/db.ts';
+import { env, isProd } from './src/config/env.ts';
+import { errorHandler } from './src/middlewares/errorHandler.middleware.ts';
+import { apiLimiter } from './src/middlewares/rateLimit.middleware.ts';
+import { requestContext } from './src/middlewares/requestContext.middleware.ts';
 import apiRouter from './src/routes/index.ts';
-import { errorHandlerMiddleware } from './src/middlewares/errorHandler.middleware.ts';
+import { logger } from './src/utils/logger.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = 3000;
 
-app.use(cors());
-app.use(express.json());
+app.set('trust proxy', 1); // Render sits behind a proxy; needed for correct client IPs in rate limiting
+app.disable('x-powered-by');
+app.use(requestContext);
+app.use(helmet({
+  // Dev: Vite injects inline scripts for HMR, so CSP is off. Prod: strict defaults, but product/brand images are remote https URLs
+  // and Tailwind/Vite emit inline styles. Add font hosts (e.g. https://fonts.googleapis.com / fonts.gstatic.com) if your index.html uses them.
+  contentSecurityPolicy: isProd
+    ? { directives: { 'img-src': ["'self'", 'data:', 'blob:', 'https:'], 'style-src': ["'self'", "'unsafe-inline'"] } }
+    : false,
+}));
+const origins = env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
+app.use(cors({ origin: origins.length ? origins : !isProd, credentials: false }));
+app.use(express.json({ limit: '2mb' }));
 
-// Initialize Database (Postgres with auto-fallback to Local Memory Demo Mode)
-try {
-  await initializeDatabase();
-} catch (err: any) {
-  console.warn('⚠️ Non-fatal database initialization error:', err.message);
-}
-
-// SEO Endpoints (Robots & Sitemap)
-app.get('/robots.txt', (req, res) => {
-  res.type('text/plain');
-  res.send(`# SoleFlow Shoe ERP Robots Configuration
-User-agent: *
-Allow: /
-Allow: /login
-Allow: /sitemap.xml
-Disallow: /api/
-Disallow: /admin/
-Disallow: /dashboard/
-
-Sitemap: https://soleflow.app/sitemap.xml
-`);
+app.get('/health', async (_req, res) => {
+  const db = await pingDb();
+  res.status(db ? 200 : 503).json({ status: db ? 'ok' : 'degraded' }); // no internals leaked
 });
 
-app.get('/sitemap.xml', (req, res) => {
-  res.type('application/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://soleflow.app/</loc>
-    <lastmod>2026-08-12</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>1.0</priority>
-  </url>
-  <url>
-    <loc>https://soleflow.app/login</loc>
-    <lastmod>2026-08-12</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-</urlset>
-`);
+app.get('/robots.txt', (_req, res) => {
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nAllow: /login\nDisallow: /api/\nDisallow: /admin/\nDisallow: /dashboard/\n`);
 });
 
-// Mount centralized REST API routes
-app.use('/api', apiRouter);
+app.use('/api', apiLimiter, apiRouter);
 
-// Global express error handler middleware
-app.use(errorHandlerMiddleware);
-
-// Asset serving: Vite middleware for development, static file delivery for production
-if (process.env.NODE_ENV !== 'production') {
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-    root: path.join(__dirname, '../frontend'),
-    configFile: path.join(__dirname, '../vite.config.ts'),
+// Frontend: Vite middleware in development, static build in production.
+if (!isProd) {
+  const { createServer } = await import('vite'); // dynamic: production images don't need vite installed
+  const vite = await createServer({
+    server: { middlewareMode: true }, appType: 'spa',
+    root: path.join(__dirname, '../frontend'), configFile: path.join(__dirname, '../vite.config.ts'),
   });
   app.use(vite.middlewares);
 } else {
-  const distPath = path.join(process.cwd(), 'dist');
-  app.use(express.static(distPath));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
-  });
+  const dist = path.join(process.cwd(), 'dist');
+  app.use(express.static(dist));
+  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-// Start Server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Shoes Stock Management Server is active on http://0.0.0.0:${PORT}`);
-  console.log(`📡 Ingress routing listening to live connections in AI Studio preview iframe`);
+app.use(errorHandler);
+
+await assertSchemaReady().catch((err) => {
+  logger.error(`Startup check failed: ${err.message}`);
+  process.exit(1);
 });
+
+const server = app.listen(env.PORT, '0.0.0.0', () => logger.info(`API listening on :${env.PORT} (${env.NODE_ENV})`));
+
+async function shutdown(signal: string) {
+  logger.info(`${signal} received, shutting down`);
+  server.close(async () => { await closePool(); process.exit(0); });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('unhandledRejection', (reason) => logger.error('Unhandled rejection', reason));

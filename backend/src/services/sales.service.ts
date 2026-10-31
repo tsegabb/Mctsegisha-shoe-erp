@@ -1,669 +1,180 @@
-import { isPostgresConnected, dbInstance, inMemoryDb } from '../config/db.ts';
-import { triggerAutoNotificationCheck } from './inventory.service.ts';
-import { mockData } from '../db/schema/index.ts';
-import crypto from 'crypto';
+import { query, withTransaction, type Queryable } from '../config/db.ts';
+import { DEFAULT_COST_RATIO, MANAGEMENT_ROLES } from '../constants/domain.ts';
+import { badRequest, conflict, forbidden, insufficientStock, notFound, unprocessable } from '../errors/AppError.ts';
+import { getGeneralSettings } from '../lib/settingsStore.ts';
+import type { AuthUser } from '../types/auth.types.ts';
+import { logger } from '../utils/logger.ts';
+import { pageResult, resolvePaging } from '../utils/pagination.ts';
+import { COUNTED_SALE, Params, likeContains, num } from '../utils/sql.ts';
+import { env } from '../config/env.ts';
+import type { CreateSaleInput, ListSalesQuery, ProcessReturnInput } from '../validators/sale.validator.ts';
+import { audit } from './audit.service.ts';
+import { notifyLowStock } from './notifications.service.ts';
+import { assertWarehouseAccess, resolveWarehouseScope, type WarehouseScope } from './scope.service.ts';
+import { adjustStock, recordMovement } from './stock.service.ts';
 
-export interface SalesQueryOptions {
-  page?: number;
-  limit?: number;
-  search?: string;
-  startDate?: string;
-  endDate?: string;
-  paymentMethod?: string;
-  status?: string;
-  sortBy?: 'created_at' | 'profit' | 'quantity' | 'selling_price';
-  sortOrder?: 'asc' | 'desc';
+const SORTS: Record<string, string> = { created_at: 's.created_at', profit: 's.profit', quantity: 's.quantity', selling_price: 's.selling_price' };
+const isManager = (u: AuthUser) => MANAGEMENT_ROLES.includes(u.role);
+
+const mapSale = (r: any) => ({
+  id: r.id, receiptId: r.receipt_id, receiptNumber: r.receipt_number ?? null, variantId: r.variant_id, warehouseId: r.warehouse_id,
+  quantity: r.quantity, sellingPrice: num(r.selling_price), costPrice: num(r.cost_price), profit: num(r.profit),
+  paymentMethod: r.payment_method, status: r.status, returnedQty: r.returned_qty, returnedAmount: num(r.returned_amount),
+  createdAt: r.created_at,
+  ...(r.sku !== undefined && {
+    productName: r.product_name, brandName: r.brand_name, size: r.size, color: r.color, sku: r.sku, cashierName: r.cashier_name ?? null,
+    variant: { id: r.variant_id, size: r.size, color: r.color, sku: r.sku, price: num(r.variant_price), productName: r.product_name, productBrand: r.brand_name, brandName: r.brand_name },
+  }),
+});
+
+/** Picks the warehouse to sell from: explicit one, else the in-scope warehouse holding the most stock of the variant. */
+async function pickWarehouse(tx: Queryable, user: AuthUser, scope: WarehouseScope, variantId: string, qty: number, requested?: string | null) {
+  if (requested) return requested;
+  const p = new Params();
+  const where = [`variant_id = ${p.add(variantId)}`, `quantity >= ${p.add(qty)}`];
+  if (scope) where.push(`warehouse_id = ANY(${p.add(scope)}::uuid[])`);
+  const { rows } = await query(`SELECT warehouse_id FROM warehouse_stock WHERE ${where.join(' AND ')} ORDER BY quantity DESC, warehouse_id LIMIT 1`, p.values, tx);
+  if (!rows[0]) throw insufficientStock({ variantId, requested: qty });
+  return rows[0].warehouse_id as string;
 }
 
 export const salesService = {
-  async getSales(warehouseId?: string, options?: SalesQueryOptions) {
-    const isAll = !warehouseId || warehouseId.toLowerCase() === 'all' || warehouseId.toLowerCase() === 'all branches';
-
-    if (isPostgresConnected && dbInstance) {
-      let targetWarehouseIds: string[] = [];
-      if (warehouseId && !isAll) {
-        try {
-          const whRes = await dbInstance.session.client.query(
-            `SELECT id, name FROM warehouses WHERE id = $1 OR LOWER(name) = LOWER($1) OR ($1 ILIKE '%main%' AND LOWER(name) ILIKE '%main%') OR ($1 ILIKE '%branch%' AND LOWER(name) ILIKE '%main%')`,
-            [warehouseId]
-          );
-          if (whRes.rows.length > 0) {
-            targetWarehouseIds = Array.from(new Set([warehouseId, ...whRes.rows.map((r: any) => r.id)]));
-          } else if (warehouseId.toLowerCase().includes('main')) {
-            targetWarehouseIds = [warehouseId, 'w1'];
-          } else {
-            targetWarehouseIds = [warehouseId];
-          }
-        } catch (err) {
-          targetWarehouseIds = [warehouseId];
-        }
-      }
-
-      const whereClauses: string[] = [];
-      const params: any[] = [];
-
-      if (!isAll && targetWarehouseIds.length > 0) {
-        params.push(targetWarehouseIds);
-        whereClauses.push(`(s.warehouse_id = ANY($${params.length}) OR s.warehouse_id IS NULL)`);
-      }
-
-      if (options?.search && options.search.trim()) {
-        params.push(`%${options.search.trim()}%`);
-        whereClauses.push(`(p.name ILIKE $${params.length} OR v.sku ILIKE $${params.length} OR b.name ILIKE $${params.length})`);
-      }
-
-      if (options?.paymentMethod && options.paymentMethod.toLowerCase() !== 'all') {
-        params.push(options.paymentMethod.trim());
-        whereClauses.push(`LOWER(s.payment_method) = LOWER($${params.length})`);
-      }
-
-      if (options?.status && options.status.toLowerCase() !== 'all') {
-        params.push(options.status.trim());
-        whereClauses.push(`LOWER(s.status) = LOWER($${params.length})`);
-      }
-
-      if (options?.startDate) {
-        params.push(options.startDate);
-        whereClauses.push(`s.created_at >= $${params.length}::timestamp`);
-      }
-
-      if (options?.endDate) {
-        params.push(options.endDate);
-        whereClauses.push(`s.created_at <= $${params.length}::timestamp`);
-      }
-
-      const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-      let sortCol = 's.created_at';
-      if (options?.sortBy === 'profit') sortCol = 's.profit';
-      else if (options?.sortBy === 'quantity') sortCol = 's.quantity';
-      else if (options?.sortBy === 'selling_price') sortCol = 's.selling_price';
-
-      const sortDir = (options?.sortOrder && options.sortOrder.toLowerCase() === 'asc') ? 'ASC' : 'DESC';
-
-      // Count query
-      const countSql = `
-        SELECT COUNT(*) as total
-        FROM sales s
-        LEFT JOIN variants v ON s.variant_id = v.id
-        LEFT JOIN products p ON v.product_id = p.id
-        LEFT JOIN brands b ON p.brand_id = b.id
-        ${whereSql}
-      `;
-      const countRes = await dbInstance.session.client.query(countSql, params);
-      const total = parseInt(countRes.rows[0]?.total || '0', 10);
-
-      const page = options?.page && options.page > 0 ? options.page : 1;
-      const limit = options?.limit && options.limit > 0 ? options.limit : undefined;
-
-      let limitOffsetSql = '';
-      const queryParams = [...params];
-      if (limit) {
-        queryParams.push(limit);
-        limitOffsetSql += ` LIMIT $${queryParams.length}`;
-        const offset = (page - 1) * limit;
-        queryParams.push(offset);
-        limitOffsetSql += ` OFFSET $${queryParams.length}`;
-      }
-
-      const dataSql = `
-        SELECT s.*, v.size, v.color, v.sku, v.price as variant_price, p.name as product_name, b.name as brand_name
-        FROM sales s
-        LEFT JOIN variants v ON s.variant_id = v.id
-        LEFT JOIN products p ON v.product_id = p.id
-        LEFT JOIN brands b ON p.brand_id = b.id
-        ${whereSql}
-        ORDER BY ${sortCol} ${sortDir}
-        ${limitOffsetSql}
-      `;
-
-      const result = await dbInstance.session.client.query(dataSql, queryParams);
-      const salesList = result.rows.map((row: any) => ({
-        id: row.id,
-        variantId: row.variant_id,
-        warehouseId: row.warehouse_id,
-        quantity: parseInt(row.quantity),
-        sellingPrice: parseFloat(row.selling_price),
-        costPrice: parseFloat(row.cost_price),
-        profit: parseFloat(row.profit),
-        paymentMethod: row.payment_method || 'cash',
-        status: row.status || 'Completed',
-        returnedQty: row.returned_qty ? parseInt(row.returned_qty) : 0,
-        returnedAmount: row.returned_amount ? parseFloat(row.returned_amount) : 0,
-        createdAt: row.created_at,
-        productName: row.product_name,
-        brandName: row.brand_name,
-        size: row.size,
-        color: row.color,
-        sku: row.sku,
-        variant: {
-          id: row.variant_id,
-          size: row.size,
-          color: row.color,
-          sku: row.sku,
-          price: parseFloat(row.variant_price),
-          productName: row.product_name,
-          productBrand: row.brand_name,
-          brandName: row.brand_name
-        }
-      }));
-
-      if (options?.page || options?.limit) {
-        return {
-          data: salesList,
-          total,
-          page,
-          limit: limit || total,
-          totalPages: limit ? Math.ceil(total / limit) : 1
-        };
-      }
-
-      return salesList;
-    } else {
-      let targetWarehouseIds: string[] = [];
-      if (warehouseId && !isAll) {
-        const matchingWhs = (inMemoryDb.warehouses || []).filter((w: any) =>
-          w.id === warehouseId ||
-          w.name.toLowerCase() === warehouseId.toLowerCase() ||
-          (warehouseId.toLowerCase().includes('main') && w.name.toLowerCase().includes('main'))
-        );
-        targetWarehouseIds = Array.from(new Set([warehouseId, ...matchingWhs.map((w: any) => w.id)]));
-      }
-
-      let filtered = inMemoryDb.sales
-        .filter((s: any) => isAll || targetWarehouseIds.includes(s.warehouseId) || !s.warehouseId)
-        .map((s: any) => {
-          const variant = inMemoryDb.variants.find((v: any) => v.id === s.variantId);
-          const product = variant ? inMemoryDb.products.find((p: any) => p.id === variant.productId) : null;
-          const brand = product ? inMemoryDb.brands.find((b: any) => b.id === product.brandId) : null;
-          return {
-            id: s.id,
-            variantId: s.variantId,
-            warehouseId: s.warehouseId,
-            quantity: s.quantity,
-            sellingPrice: s.sellingPrice,
-            costPrice: s.costPrice,
-            profit: s.profit,
-            paymentMethod: s.paymentMethod || 'cash',
-            status: s.status || 'Completed',
-            returnedQty: s.returnedQty || 0,
-            returnedAmount: s.returnedAmount || 0,
-            createdAt: s.createdAt,
-            productName: product?.name,
-            brandName: brand?.name,
-            size: variant?.size,
-            color: variant?.color,
-            sku: variant?.sku,
-            variant: variant ? {
-              id: variant.id,
-              productId: variant.productId,
-              size: variant.size,
-              color: variant.color,
-              sku: variant.sku,
-              price: variant.price,
-              createdAt: variant.createdAt,
-              productName: product?.name,
-              productBrand: brand?.name,
-              brandName: brand?.name
-            } : undefined
-          };
-        });
-
-      if (options?.search && options.search.trim()) {
-        const q = options.search.trim().toLowerCase();
-        filtered = filtered.filter(s =>
-          (s.productName && s.productName.toLowerCase().includes(q)) ||
-          (s.sku && s.sku.toLowerCase().includes(q)) ||
-          (s.brandName && s.brandName.toLowerCase().includes(q))
-        );
-      }
-
-      if (options?.paymentMethod && options.paymentMethod.toLowerCase() !== 'all') {
-        filtered = filtered.filter(s => s.paymentMethod.toLowerCase() === options.paymentMethod!.toLowerCase());
-      }
-
-      if (options?.status && options.status.toLowerCase() !== 'all') {
-        filtered = filtered.filter(s => s.status.toLowerCase() === options.status!.toLowerCase());
-      }
-
-      if (options?.startDate) {
-        const start = new Date(options.startDate).getTime();
-        filtered = filtered.filter(s => new Date(s.createdAt).getTime() >= start);
-      }
-
-      if (options?.endDate) {
-        const end = new Date(options.endDate).getTime();
-        filtered = filtered.filter(s => new Date(s.createdAt).getTime() <= end);
-      }
-
-      filtered.sort((a, b) => {
-        let valA = new Date(a.createdAt).getTime();
-        let valB = new Date(b.createdAt).getTime();
-        if (options?.sortBy === 'profit') { valA = a.profit; valB = b.profit; }
-        else if (options?.sortBy === 'quantity') { valA = a.quantity; valB = b.quantity; }
-        else if (options?.sortBy === 'selling_price') { valA = a.sellingPrice; valB = b.sellingPrice; }
-
-        if (valA < valB) return options?.sortOrder === 'asc' ? -1 : 1;
-        if (valA > valB) return options?.sortOrder === 'asc' ? 1 : -1;
-        return 0;
-      });
-
-      const total = filtered.length;
-      const page = options?.page && options.page > 0 ? options.page : 1;
-      const limit = options?.limit && options.limit > 0 ? options.limit : undefined;
-
-      let paginated = filtered;
-      if (limit) {
-        const start = (page - 1) * limit;
-        paginated = filtered.slice(start, start + limit);
-      }
-
-      if (options?.page || options?.limit) {
-        return {
-          data: paginated,
-          total,
-          page,
-          limit: limit || total,
-          totalPages: limit ? Math.ceil(total / limit) : 1
-        };
-      }
-
-      return paginated;
-    }
+  async list(user: AuthUser, q: ListSalesQuery) {
+    const scope = await resolveWarehouseScope(user, q.warehouseId ?? q.shopId);
+    const paging = resolvePaging(q);
+    const p = new Params();
+    const where: string[] = [];
+    if (scope) where.push(`s.warehouse_id = ANY(${p.add(scope)}::uuid[])`);
+    if (q.search) { const ref = p.add(likeContains(q.search)); where.push(`(p.name ILIKE ${ref} OR v.sku ILIKE ${ref} OR b.name ILIKE ${ref})`); }
+    if (q.paymentMethod) where.push(`s.payment_method = ${p.add(q.paymentMethod)}`);
+    if (q.status) where.push(`s.status = ${p.add(q.status)}`);
+    if (q.startDate) where.push(`s.created_at >= ${p.add(q.startDate)}::timestamptz`);
+    if (q.endDate) where.push(`s.created_at <= ${p.add(q.endDate)}::timestamptz`);
+    const from = `FROM sales s JOIN variants v ON v.id = s.variant_id JOIN products p ON p.id = v.product_id JOIN brands b ON b.id = p.brand_id
+                  LEFT JOIN receipts r ON r.id = s.receipt_id LEFT JOIN users u ON u.id = r.cashier_id
+                  ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+    const total = (await query(`SELECT COUNT(*)::int AS n ${from}`, p.values)).rows[0].n;
+    const limitRef = p.add(paging.limit);
+    const offsetRef = p.add(paging.offset);
+    const { rows } = await query(
+      `SELECT s.*, r.receipt_number, u.name AS cashier_name, v.size, v.color, v.sku, v.price AS variant_price, p.name AS product_name, b.name AS brand_name
+       ${from} ORDER BY ${SORTS[q.sortBy ?? 'created_at']} ${q.sortOrder === 'asc' ? 'ASC' : 'DESC'}, s.id LIMIT ${limitRef} OFFSET ${offsetRef}`, p.values);
+    return pageResult(rows.map(mapSale), total, paging);
   },
 
-  async createSale(sale: { variantId: string; quantity: number; sellingPrice: number; costPrice?: number; warehouseId?: string; paymentMethod?: string }) {
-    const qty = sale.quantity;
-    const variantId = sale.variantId;
-    const warehouseId = sale.warehouseId;
-    const paymentMethod = sale.paymentMethod || 'cash';
+  async create(user: AuthUser, input: CreateSaleInput) {
+    const scope = await resolveWarehouseScope(user, input.warehouseId ?? undefined);
+    const maxDiscount = getGeneralSettings().pricingTax.maxDiscount;
 
-    if (isPostgresConnected && dbInstance) {
-      const pool = dbInstance.session.client;
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
+    const result = await withTransaction(async (tx) => {
+      const receipt = (await query('INSERT INTO receipts (shop_id, cashier_id) VALUES ($1,$2) RETURNING id, receipt_number', [user.shopId, user.id], tx)).rows[0];
+      const lines: any[] = [];
 
-        // Fetch variant to verify existence and check stock
-        let varRes = await client.query('SELECT v.*, p.name as product_name FROM variants v JOIN products p ON v.product_id = p.id WHERE v.id = $1 FOR UPDATE', [variantId]);
-        if (varRes.rows.length === 0) {
-          const targetMock = mockData.variants.find(m => m.id === variantId);
-          const pId = targetMock ? targetMock.productId : 'p1';
-          const targetProd = mockData.products.find(p => p.id === pId);
-          const prodName = targetProd ? targetProd.name : 'Shoe Product';
-          const bId = targetProd ? targetProd.brandId || 'b1' : 'b1';
-          const targetBrand = mockData.brands.find(b => b.id === bId);
+      // Sorted by variant so concurrent multi-line sales lock stock rows in the same order.
+      for (const item of [...input.items].sort((a, b) => a.variantId.localeCompare(b.variantId))) {
+        const { rows } = await query(
+          `SELECT v.id, v.sku, v.price, v.is_active, p.name, p.cost_price, p.is_active AS product_active
+           FROM variants v JOIN products p ON p.id = v.product_id WHERE v.id = $1`, [item.variantId], tx);
+        const v = rows[0];
+        if (!v) throw notFound(`Variant ${item.variantId} not found`);
+        if (!v.is_active || !v.product_active) throw conflict(`${v.name} (${v.sku}) is inactive and cannot be sold`);
 
-          if (targetBrand) {
-            await client.query('INSERT INTO brands (id, name, logo_url, description) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING', [targetBrand.id, targetBrand.name, targetBrand.logoUrl || null, targetBrand.description || null]);
-          }
-          if (targetProd) {
-            await client.query('INSERT INTO products (id, name, description, brand_id, category, gender, base_price, warehouse_ids) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING', [targetProd.id, targetProd.name, targetProd.description || '', bId, targetProd.category, targetProd.gender, targetProd.basePrice, 'w1,w2']);
-          } else {
-            await client.query('INSERT INTO products (id, name, description, brand_id, category, gender, base_price, warehouse_ids) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING', ['p1', prodName, 'Footwear item', 'b1', 'Sneakers', 'Unisex', sale.sellingPrice, 'w1,w2']);
-          }
-
-          if (targetMock) {
-            await client.query('INSERT INTO variants (id, product_id, size, color, sku, current_stock, barcode, price) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING', [targetMock.id, targetMock.productId, targetMock.size, targetMock.color, targetMock.sku, Math.max(targetMock.currentStock || 50, qty + 10), targetMock.barcode || '12345', targetMock.price]);
-          } else {
-            await client.query('INSERT INTO variants (id, product_id, size, color, sku, current_stock, barcode, price) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING', [variantId, pId, 'EU 42', 'Black', `SKU-${variantId.toUpperCase()}`, qty + 50, `BC-${variantId}`, sale.sellingPrice]);
-          }
-
-          varRes = await client.query('SELECT v.*, p.name as product_name FROM variants v JOIN products p ON v.product_id = p.id WHERE v.id = $1 FOR UPDATE', [variantId]);
+        // Price guard: cashiers cannot undercut the list price by more than the configured max discount.
+        const floor = num(v.price) * (1 - maxDiscount / 100);
+        if (!isManager(user) && item.sellingPrice < floor - 0.005) {
+          throw forbidden(`Discount on ${v.sku} exceeds the allowed ${maxDiscount}%. Ask a manager.`);
         }
 
-        const variant = varRes.rows[0];
-        if (parseInt(variant.current_stock) < qty) {
-          await client.query('ROLLBACK');
-          return { error: `Insufficient stock! Only ${variant.current_stock} pairs of ${variant.product_name} remaining.`, status: 400 };
-        }
+        // Cost comes from the catalogue. Only managers may override it; the client can never inflate profit.
+        let cost: number;
+        if (v.cost_price !== null) cost = num(v.cost_price);
+        else if (isManager(user) && item.costPrice !== undefined) cost = item.costPrice;
+        else { cost = Math.round(num(v.price) * DEFAULT_COST_RATIO * 100) / 100; logger.warn(`Product ${v.name} has no cost_price; estimating cost at ${DEFAULT_COST_RATIO * 100}% of list price`); }
+        if (isManager(user) && item.costPrice !== undefined && v.cost_price !== null) cost = item.costPrice;
 
-        const finalCostPrice = sale.costPrice || (parseFloat(variant.price) * 0.6);
-        const finalSellingPrice = sale.sellingPrice;
-        const profit = qty * (finalSellingPrice - finalCostPrice);
+        const warehouseId = await pickWarehouse(tx, user, scope, item.variantId, item.quantity, input.warehouseId);
+        await assertWarehouseAccess(user, [warehouseId], tx);
+        await adjustStock(tx, warehouseId, item.variantId, -item.quantity); // 23514 -> 409 Insufficient stock
 
-        // Resolve warehouse
-        let finalWarehouseId: string | null = null;
-        if (warehouseId) {
-          const whCheck = await client.query('SELECT id FROM warehouses WHERE id = $1', [warehouseId]);
-          if (whCheck.rows.length > 0) {
-            finalWarehouseId = warehouseId;
-          }
-
-          // Ensure product warehouse_ids includes this warehouse if not present
-          const shopCheck = await client.query(`
-            SELECT p.id, p.warehouse_ids FROM variants v 
-            JOIN products p ON v.product_id = p.id 
-            WHERE v.id = $1
-          `, [variantId]);
-          if (shopCheck.rows.length > 0) {
-            const pRow = shopCheck.rows[0];
-            const currentWhStr = pRow.warehouse_ids || '';
-            if (currentWhStr && !currentWhStr.includes(warehouseId)) {
-              const updatedWh = `${currentWhStr},${warehouseId}`;
-              await client.query(`UPDATE products SET warehouse_ids = $1 WHERE id = $2`, [updatedWh, pRow.id]);
-            }
-          }
-        }
-
-        if (!finalWarehouseId) {
-          const firstWh = await client.query('SELECT id FROM warehouses LIMIT 1');
-          if (firstWh.rows.length > 0) {
-            finalWarehouseId = firstWh.rows[0].id;
-          }
-        }
-
-        // Reduce stock
-        await client.query('UPDATE variants SET current_stock = current_stock - $1 WHERE id = $2', [qty, variantId]);
-
-        // Record Sale
-        const saleId = crypto.randomUUID();
-        await client.query(`
-          INSERT INTO sales (id, variant_id, warehouse_id, quantity, selling_price, cost_price, profit, payment_method, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-        `, [saleId, variantId, finalWarehouseId, qty, finalSellingPrice, finalCostPrice, profit, paymentMethod]);
-
-        // Record Movement (audit trail)
-        const mvId = crypto.randomUUID();
-        await client.query(`
-          INSERT INTO movements (id, variant_id, from_warehouse_id, to_warehouse_id, quantity, type, reason, created_by, created_at)
-          VALUES ($1, $2, $3, null, $4, 'outgoing', $5, 'POS Sale', NOW())
-        `, [mvId, variantId, finalWarehouseId, qty, `Sold ${qty} pairs of ${variant.product_name} (${variant.sku})`]);
-
-        await client.query('COMMIT');
-        triggerAutoNotificationCheck().catch(err => console.error('Auto notification check error:', err));
-
-        return {
-          data: { id: saleId, variantId, quantity: qty, sellingPrice: finalSellingPrice, costPrice: finalCostPrice, profit, paymentMethod }
-        };
-      } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-      } finally {
-        client.release();
+        // NOTE: `profit` is a generated column – it is never written.
+        const sale = (await query(
+          `INSERT INTO sales (receipt_id, variant_id, warehouse_id, quantity, selling_price, cost_price, payment_method)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          [receipt.id, item.variantId, warehouseId, item.quantity, item.sellingPrice, cost, input.paymentMethod], tx)).rows[0];
+        await recordMovement(tx, { variantId: item.variantId, type: 'sale', quantity: item.quantity, from: warehouseId, reason: `Sold ${item.quantity} × ${v.name} (${v.sku})`, createdBy: user.name });
+        lines.push(mapSale({ ...sale, receipt_number: receipt.receipt_number }));
       }
-    } else {
-      let vIdx = inMemoryDb.variants.findIndex((v: any) => v.id === variantId);
-      if (vIdx === -1) {
-        const targetMock = mockData.variants.find(m => m.id === variantId);
-        if (targetMock) {
-          inMemoryDb.variants.push({ ...targetMock, currentStock: Math.max(targetMock.currentStock || 50, qty + 10) });
-          vIdx = inMemoryDb.variants.length - 1;
-        } else {
-          const newV = {
-            id: variantId,
-            productId: 'p1',
-            size: 'EU 42',
-            color: 'Black',
-            sku: `SKU-${variantId.toUpperCase()}`,
-            currentStock: qty + 50,
-            barcode: `BC-${variantId}`,
-            price: sale.sellingPrice
-          };
-          inMemoryDb.variants.push(newV);
-          vIdx = inMemoryDb.variants.length - 1;
-        }
-      }
+      return { receiptId: receipt.id as string, receiptNumber: receipt.receipt_number as number, lines };
+    });
 
-      const variant = inMemoryDb.variants[vIdx];
-      const product = inMemoryDb.products.find((p: any) => p.id === variant.productId);
-      const productName = product ? product.name : 'Unknown Shoe';
-
-      if (variant.currentStock < qty) {
-        return { error: `Insufficient stock! Only ${variant.currentStock} pairs of ${productName} remaining.`, status: 400 };
-      }
-
-      if (warehouseId && product) {
-        let rawWh = product.warehouseIds || product.warehouse_ids || [];
-        if (typeof rawWh === 'string') rawWh = rawWh.split(',').filter(Boolean);
-        if (!rawWh.includes(warehouseId)) {
-          product.warehouseIds = [...rawWh, warehouseId];
-        }
-      }
-
-      const finalCostPrice = sale.costPrice || (variant.price * 0.6);
-      const finalSellingPrice = sale.sellingPrice;
-      const profit = qty * (finalSellingPrice - finalCostPrice);
-
-      // Reduce stock
-      inMemoryDb.variants[vIdx].currentStock -= qty;
-
-      // Record Sale
-      const saleId = crypto.randomUUID();
-      const newSale = {
-        id: saleId,
-        variantId,
-        warehouseId: warehouseId || null,
-        quantity: qty,
-        sellingPrice: finalSellingPrice,
-        costPrice: finalCostPrice,
-        profit,
-        paymentMethod,
-        createdAt: new Date().toISOString()
-      };
-      inMemoryDb.sales.push(newSale);
-
-      // Record Movement
-      const mvId = crypto.randomUUID();
-      inMemoryDb.movements.push({
-        id: mvId,
-        variantId,
-        fromWarehouseId: warehouseId || null,
-        toWarehouseId: null,
-        quantity: qty,
-        type: 'outgoing',
-        reason: `Sold ${qty} pairs of ${productName} (${variant.sku})`,
-        createdBy: 'POS Sale',
-        createdAt: new Date().toISOString()
-      });
-
-      triggerAutoNotificationCheck().catch(err => console.error('Auto notification check error:', err));
-
-      return { data: newSale };
-    }
+    notifyLowStock();
+    const total = result.lines.reduce((s, l) => s + l.sellingPrice * l.quantity, 0);
+    // First line is spread at top level so single-item POS clients keep working unchanged.
+    return { ...result.lines[0], receiptId: result.receiptId, receiptNumber: result.receiptNumber, total: Math.round(total * 100) / 100, items: result.lines };
   },
 
-  async processReturn(payload: { saleId?: string; totalReturnAmount?: number; totalReturnQty?: number; reason?: string; restock?: boolean }) {
-    const { saleId, totalReturnAmount = 0, totalReturnQty = 1, reason = 'Customer Return', restock = true } = payload;
-    if (isPostgresConnected && dbInstance) {
-      const pool = dbInstance.session.client;
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        if (saleId) {
-          const saleRes = await client.query('SELECT * FROM sales WHERE id = $1 FOR UPDATE', [saleId]);
-          if (saleRes.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return { success: false, error: 'Original sale record not found.' };
-          }
-          const sale = saleRes.rows[0];
-          const currReturnedQty = parseInt(sale.returned_qty || '0');
-          const origQty = parseInt(sale.quantity || '1');
-          
-          if (currReturnedQty + totalReturnQty > origQty) {
-            await client.query('ROLLBACK');
-            return { success: false, error: `Cannot return ${totalReturnQty} items. Only ${origQty - currReturnedQty} remain eligible for return.` };
-          }
+  async processReturn(user: AuthUser, input: ProcessReturnInput) {
+    return withTransaction(async (tx) => {
+      const sale = (await query('SELECT * FROM sales WHERE id = $1 FOR UPDATE', [input.saleId], tx)).rows[0];
+      if (!sale) throw notFound('Original sale not found');
+      if (sale.warehouse_id) await assertWarehouseAccess(user, [sale.warehouse_id], tx);
+      if (!['completed', 'partially_returned'].includes(sale.status)) throw conflict(`A sale with status "${sale.status}" cannot be returned`);
 
-          const newReturnedQty = currReturnedQty + totalReturnQty;
-          const currReturnedAmount = parseFloat(sale.returned_amount || '0');
-          const newReturnedAmount = currReturnedAmount + totalReturnAmount;
-          const origUnitSellingPrice = parseFloat(sale.selling_price || '0');
-          const origTotalValue = origQty * origUnitSellingPrice;
+      const remaining = sale.quantity - sale.returned_qty;
+      if (input.quantity > remaining) throw unprocessable(`Cannot return ${input.quantity}; only ${remaining} remain eligible`);
 
-          let newStatus = 'Partially Returned';
-          if (newReturnedQty >= origQty || newReturnedAmount >= origTotalValue) {
-            newStatus = 'Returned';
-          }
+      // Refund math in integer cents. The server decides the amount; only managers (route-guarded) may override it.
+      const unit = Math.round(num(sale.selling_price) * 100);
+      const maxCents = unit * sale.quantity - Math.round(num(sale.returned_amount) * 100);
+      const cents = input.refundAmount !== undefined ? Math.round(input.refundAmount * 100) : unit * input.quantity;
+      if (cents > maxCents) throw unprocessable('Refund exceeds the amount originally paid for this sale');
 
-          await client.query(
-            'UPDATE sales SET status = $1, returned_qty = $2, returned_amount = $3 WHERE id = $4',
-            [newStatus, newReturnedQty, newReturnedAmount, saleId]
-          );
+      const newQty = sale.returned_qty + input.quantity;
+      const status = newQty >= sale.quantity ? 'returned' : 'partially_returned';
+      const updated = (await query(
+        'UPDATE sales SET returned_qty = $1, returned_amount = returned_amount + $2, status = $3 WHERE id = $4 RETURNING *',
+        [newQty, cents / 100, status, sale.id], tx)).rows[0];
 
-          if (restock && sale.variant_id) {
-            await client.query('UPDATE variants SET current_stock = current_stock + $1 WHERE id = $2', [totalReturnQty, sale.variant_id]);
-            const mvId = crypto.randomUUID();
-            await client.query(
-              `INSERT INTO movements (id, variant_id, from_warehouse_id, to_warehouse_id, quantity, type, reason, created_by, created_at)
-               VALUES ($1, $2, $3, NULL, $4, 'incoming', $5, 'Return Process', NOW())`,
-              [mvId, sale.variant_id, sale.warehouse_id, totalReturnQty, `Customer Return: ${reason}`]
-            );
-          }
-        }
-        await client.query('COMMIT');
-        return { success: true };
-      } catch (e: any) {
-        await client.query('ROLLBACK');
-        console.error('Error processing return in DB:', e);
-        return { success: false, error: e.message };
-      } finally {
-        client.release();
+      if (input.restock) {
+        const wh = sale.warehouse_id ?? input.warehouseId;
+        if (!wh) throw badRequest('warehouseId is required to restock a legacy sale without a warehouse');
+        await assertWarehouseAccess(user, [wh], tx);
+        await adjustStock(tx, wh, sale.variant_id, input.quantity);
+        await recordMovement(tx, { variantId: sale.variant_id, type: 'return', quantity: input.quantity, to: wh, reason: `Customer return: ${input.reason}`, createdBy: user.name });
       }
-    } else {
-      if (saleId) {
-        const idx = inMemoryDb.sales.findIndex((s: any) => s.id === saleId);
-        if (idx !== -1) {
-          const sale = inMemoryDb.sales[idx];
-          const newReturnedQty = (sale.returnedQty || 0) + totalReturnQty;
-          const newReturnedAmount = (sale.returnedAmount || 0) + totalReturnAmount;
-          const origQty = sale.quantity || 1;
-          const origTotalValue = origQty * (sale.sellingPrice || 0);
-
-          sale.returnedQty = newReturnedQty;
-          sale.returnedAmount = newReturnedAmount;
-          sale.status = (newReturnedQty >= origQty || newReturnedAmount >= origTotalValue) ? 'Returned' : 'Partially Returned';
-
-          if (restock && sale.variantId) {
-            const v = inMemoryDb.variants.find((varItem: any) => varItem.id === sale.variantId);
-            if (v) {
-              v.currentStock += totalReturnQty;
-            }
-            inMemoryDb.movements.push({
-              id: crypto.randomUUID(),
-              variantId: sale.variantId,
-              fromWarehouseId: sale.warehouseId || null,
-              toWarehouseId: null,
-              quantity: totalReturnQty,
-              type: 'incoming',
-              reason: `Customer Return: ${reason}`,
-              createdBy: 'Return Process',
-              createdAt: new Date().toISOString()
-            });
-          }
-        }
-      }
-      return { success: true };
-    }
+      await audit(tx, 'sale.returned', { saleId: sale.id, quantity: input.quantity, refund: cents / 100, restock: input.restock }, user);
+      return { success: true, sale: mapSale(updated) };
+    });
   },
 
-  async reconcileTransactions(warehouseId?: string) {
-    const sales = await this.getSales(warehouseId);
-    const todayStr = new Date().toISOString().split('T')[0];
+  /** Per-method totals (net of returns), split into "today" (business time zone) and all-time. */
+  async reconcile(scope: WarehouseScope) {
+    const p = new Params();
+    const tz = p.add(env.APP_TIMEZONE);
+    const scopeSql = scope ? `AND s.warehouse_id = ANY(${p.add(scope)}::uuid[])` : '';
+    const net = 'GREATEST(s.quantity * s.selling_price - s.returned_amount, 0)';
+    const isToday = `(s.created_at AT TIME ZONE ${tz})::date = (now() AT TIME ZONE ${tz})::date`;
+    const { rows } = await query(
+      `SELECT s.payment_method AS method,
+              COALESCE(SUM(${net}), 0) AS total, COALESCE(SUM(${net}) FILTER (WHERE ${isToday}), 0) AS today,
+              COUNT(*)::int AS cnt, (COUNT(*) FILTER (WHERE ${isToday}))::int AS today_cnt
+       FROM sales s WHERE ${COUNTED_SALE} ${scopeSql} GROUP BY s.payment_method`, p.values);
 
-    let todaysCashSales = 0;
-    let todaysDigitalSales = 0;
-    let todaysTelebirrSales = 0;
-    let todaysCbeSales = 0;
-    let todaysCardSales = 0;
-    let todaysOtherDigitalSales = 0;
-
-    let historicalCashSales = 0;
-    let historicalDigitalSales = 0;
-    let historicalTelebirrSales = 0;
-    let historicalCbeSales = 0;
-    let historicalCardSales = 0;
-    let historicalOtherDigitalSales = 0;
-
-    let todaysCount = 0;
-    let historicalCount = 0;
-    let todaysTelebirrCount = 0;
-    let historicalTelebirrCount = 0;
-
-    for (const sale of sales) {
-      if (sale.status === 'Cancelled') continue;
-
-      const totalAmount = Math.max(0, (sale.sellingPrice || 0) * (sale.quantity || 0) - (sale.returnedAmount || 0));
-      const method = (sale.paymentMethod || 'cash').toLowerCase().trim();
-      const saleDateStr = sale.createdAt ? new Date(sale.createdAt).toISOString().split('T')[0] : todayStr;
-      const isToday = saleDateStr === todayStr;
-
-      const isCash = method === 'cash';
-      const isTelebirr = method === 'telebirr';
-      const isCbe = method === 'cbe' || method === 'cbe birr' || method === 'cbebirr';
-      const isCard = method === 'card' || method === 'visa' || method === 'mastercard';
-
-      // Historical aggregation
-      historicalCount++;
-      if (isCash) {
-        historicalCashSales += totalAmount;
-      } else {
-        historicalDigitalSales += totalAmount;
-        if (isTelebirr) {
-          historicalTelebirrSales += totalAmount;
-          historicalTelebirrCount++;
-        } else if (isCbe) {
-          historicalCbeSales += totalAmount;
-        } else if (isCard) {
-          historicalCardSales += totalAmount;
-        } else {
-          historicalOtherDigitalSales += totalAmount;
-        }
-      }
-
-      // Today aggregation
-      if (isToday) {
-        todaysCount++;
-        if (isCash) {
-          todaysCashSales += totalAmount;
-        } else {
-          todaysDigitalSales += totalAmount;
-          if (isTelebirr) {
-            todaysTelebirrSales += totalAmount;
-            todaysTelebirrCount++;
-          } else if (isCbe) {
-            todaysCbeSales += totalAmount;
-          } else if (isCard) {
-            todaysCardSales += totalAmount;
-          } else {
-            todaysOtherDigitalSales += totalAmount;
-          }
-        }
-      }
-    }
+    const by = (m: string) => rows.find((r) => r.method === m);
+    const t = (m: string, k: 'today' | 'total') => num(by(m)?.[k]);
+    const sum = (k: 'today' | 'total') => rows.reduce((a, r) => a + num(r[k]), 0);
+    const methods = Object.fromEntries(['cash', 'card', 'mobile_money', 'bank_transfer', 'credit', 'other'].map((m) => [m, { today: t(m, 'today'), historical: t(m, 'total') }]));
 
     return {
-      warehouseId: warehouseId || 'all',
       reconciledAt: new Date().toISOString(),
-      todaysCashSales,
-      todaysDigitalSales,
-      todaysTelebirrSales,
-      todaysCbeSales,
-      todaysCardSales,
-      todaysOtherDigitalSales,
-      todaysTotalSales: todaysCashSales + todaysDigitalSales,
-
-      historicalCashSales,
-      historicalDigitalSales,
-      historicalTelebirrSales,
-      historicalCbeSales,
-      historicalCardSales,
-      historicalOtherDigitalSales,
-      historicalTotalSales: historicalCashSales + historicalDigitalSales,
-
-      digitalBreakdown: {
-        telebirr: { today: todaysTelebirrSales, historical: historicalTelebirrSales },
-        cbe: { today: todaysCbeSales, historical: historicalCbeSales },
-        card: { today: todaysCardSales, historical: historicalCardSales },
-        other: { today: todaysOtherDigitalSales, historical: historicalOtherDigitalSales }
-      },
-
-      counts: {
-        todayTotal: todaysCount,
-        todayTelebirr: todaysTelebirrCount,
-        historicalTotal: historicalCount,
-        historicalTelebirr: historicalTelebirrCount
-      }
+      byMethod: methods,
+      todaysCashSales: t('cash', 'today'), todaysDigitalSales: sum('today') - t('cash', 'today'), todaysTotalSales: sum('today'),
+      historicalCashSales: t('cash', 'total'), historicalDigitalSales: sum('total') - t('cash', 'total'), historicalTotalSales: sum('total'),
+      // Legacy keys. The DB cannot tell Telebirr from CBE Birr (both are mobile_money), see AUDIT.md.
+      todaysTelebirrSales: t('mobile_money', 'today'), historicalTelebirrSales: t('mobile_money', 'total'),
+      todaysCbeSales: t('bank_transfer', 'today'), historicalCbeSales: t('bank_transfer', 'total'),
+      todaysCardSales: t('card', 'today'), historicalCardSales: t('card', 'total'),
+      counts: { todayTotal: rows.reduce((a, r) => a + r.today_cnt, 0), historicalTotal: rows.reduce((a, r) => a + r.cnt, 0) },
     };
-  }
+  },
 };

@@ -1,48 +1,39 @@
 import { Router } from 'express';
-import { inventoryController } from '../controllers/inventory.controller.ts';
+import { inventoryController as c } from '../controllers/inventory.controller.ts';
 import { authMiddleware } from '../middlewares/auth.middleware.ts';
 import { requireRole } from '../middlewares/roleGuard.middleware.ts';
 import { validate } from '../middlewares/validate.middleware.ts';
-import { 
-  createWarehouseSchema, 
-  createVariantSchema, 
-  createMovementSchema,
-  createSupplierSchema,
-  createOrderSchema,
-  updateOrderStatusSchema
-} from '../validators/inventory.validator.ts';
+import { MANAGEMENT_ROLES, STOCK_ROLES } from '../constants/domain.ts';
+import { idParams } from '../validators/common.validator.ts';
+import * as v from '../validators/inventory.validator.ts';
+
+const manage = requireRole(...MANAGEMENT_ROLES);
+const stock = requireRole(...STOCK_ROLES);
 
 const router = Router();
+// Explicit prefixes: unknown paths fall through to a clean 404 instead of a misleading 401.
+router.use(['/variants', '/warehouses', '/suppliers', '/movements', '/orders'], authMiddleware);
 
-// Apply authentication to all inventory operations
-router.use(authMiddleware);
+router.get('/variants', validate(v.listVariantsSchema), c.getVariants);
+router.post('/variants', manage, validate(v.createVariantSchema), c.createVariant);
+router.put('/variants/:id', manage, validate(v.updateVariantSchema), c.updateVariant);
+router.delete('/variants/:id', manage, validate(idParams), c.deleteVariant);
 
-// --- VARIANTS ---
-router.get('/variants', inventoryController.getVariants);
-router.post('/variants', requireRole(['Admin', 'Manager']), validate(createVariantSchema), inventoryController.createVariant);
-router.put('/variants/:id', requireRole(['Admin', 'Manager']), validate(createVariantSchema), inventoryController.updateVariant);
-router.delete('/variants/:id', requireRole(['Admin', 'Manager']), inventoryController.deleteVariant);
+router.get('/warehouses', c.getWarehouses);
+router.post('/warehouses', manage, validate(v.createWarehouseSchema), c.createWarehouse);
+router.put('/warehouses/:id', manage, validate(v.updateWarehouseSchema), c.updateWarehouse);
+router.delete('/warehouses/:id', manage, validate(idParams), c.deleteWarehouse);
 
-// --- WAREHOUSES ---
-router.get('/warehouses', inventoryController.getWarehouses);
-router.post('/warehouses', requireRole(['Admin', 'Manager']), validate(createWarehouseSchema), inventoryController.createWarehouse);
-router.put('/warehouses/:id', requireRole(['Admin', 'Manager']), validate(createWarehouseSchema), inventoryController.updateWarehouse);
-router.delete('/warehouses/:id', requireRole(['Admin', 'Manager']), inventoryController.deleteWarehouse);
+router.get('/suppliers', c.getSuppliers);
+router.post('/suppliers', manage, validate(v.createSupplierSchema), c.createSupplier);
+router.put('/suppliers/:id', manage, validate(v.updateSupplierSchema), c.updateSupplier);
+router.delete('/suppliers/:id', manage, validate(idParams), c.deleteSupplier);
 
-// --- SUPPLIERS ---
-router.get('/suppliers', inventoryController.getSuppliers);
-router.post('/suppliers', requireRole(['Admin', 'Manager']), validate(createSupplierSchema), inventoryController.createSupplier);
-router.put('/suppliers/:id', requireRole(['Admin', 'Manager']), validate(createSupplierSchema), inventoryController.updateSupplier);
-router.delete('/suppliers/:id', requireRole(['Admin', 'Manager']), inventoryController.deleteSupplier);
+router.get('/movements', validate(v.listMovementsSchema), c.getMovements);
+router.post('/movements', stock, validate(v.createMovementSchema), c.createMovement);
 
-// --- MOVEMENTS ---
-router.get('/movements', inventoryController.getMovements);
-router.post('/movements', requireRole(['Admin', 'Manager']), validate(createMovementSchema), inventoryController.createMovement);
-
-// --- ORDERS ---
-router.get('/orders', inventoryController.getOrders);
-router.post('/orders', requireRole(['Admin', 'Manager']), validate(createOrderSchema), inventoryController.createOrder);
-router.put('/orders/:id/status', requireRole(['Admin', 'Manager']), validate(updateOrderStatusSchema), inventoryController.updateOrderStatus);
+router.get('/orders', manage, validate(v.listOrdersSchema), c.getOrders);
+router.post('/orders', manage, validate(v.createOrderSchema), c.createOrder);
+router.put('/orders/:id/status', stock, validate(v.updateOrderStatusSchema), c.updateOrderStatus);
 
 export default router;
-

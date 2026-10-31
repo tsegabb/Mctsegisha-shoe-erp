@@ -1,60 +1,36 @@
-import { Request, Response, NextFunction } from 'express';
-import { isPostgresConnected, dbInstance, inMemoryDb } from '../config/db.ts';
-import { apiResponse } from '../utils/apiResponse.ts';
-import { UserSession } from '../types/auth.types.ts';
+import jwt from 'jsonwebtoken';
+import { asyncHandler } from '../utils/asyncHandler.ts';
+import { unauthorized } from '../errors/AppError.ts';
+import { env } from '../config/env.ts';
+import { authService } from '../services/auth.service.ts';
+import { UUID_RE } from '../validators/common.validator.ts';
 
-export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  const userId = req.headers['x-user-id'] as string;
-  
-  if (!userId) {
-    return apiResponse.error(res, 'Not authenticated', 401);
+export const JWT_ISSUER = 'soleflow-api';
+export const JWT_AUDIENCE = 'soleflow-app';
+
+/**
+ * Verifies the Bearer JWT, then re-loads the user from the database on every request so that
+ * deactivating a user or changing their role/branch takes effect immediately (no stale claims).
+ */
+export const authMiddleware = asyncHandler(async (req, _res, next) => {
+  const header = req.headers.authorization;
+  if (!header || !/^Bearer\s+/i.test(header)) throw unauthorized();
+
+  let sub: string;
+  try {
+    const payload = jwt.verify(header.replace(/^Bearer\s+/i, '').trim(), env.JWT_SECRET, {
+      algorithms: ['HS256'], // pin the algorithm – never accept "none" or asymmetric confusion
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
+    if (typeof payload === 'string' || typeof payload.sub !== 'string' || !UUID_RE.test(payload.sub)) throw new Error('bad claims');
+    sub = payload.sub;
+  } catch {
+    throw unauthorized('Invalid or expired token');
   }
 
-  let user: UserSession | null = null;
-
-  if (isPostgresConnected && dbInstance) {
-    const pool = dbInstance.session.client;
-    try {
-      const userRes = await pool.query(`
-        SELECT u.id, u.name, u.email, u.role, u.shop_id, w.name as shop_name
-        FROM users u
-        LEFT JOIN warehouses w ON u.shop_id = w.id
-        WHERE u.id = $1
-      `, [userId]);
-      if (userRes.rows.length > 0) {
-        const row = userRes.rows[0];
-        user = { 
-          id: row.id, 
-          name: row.name, 
-          email: row.email, 
-          role: row.role, 
-          shopId: row.shop_id || null, 
-          shopName: row.shop_name || null 
-        };
-      }
-    } catch (e: any) {
-      console.error('Database query error in authMiddleware:', e);
-    }
-  } else {
-    // InMemory fallback
-    const found = inMemoryDb.users.find((u: any) => u.id === userId);
-    if (found) {
-      const shop = inMemoryDb.warehouses.find((w: any) => w.id === found.shopId);
-      user = { 
-        id: found.id, 
-        name: found.name, 
-        email: found.email, 
-        role: found.role, 
-        shopId: found.shopId || null, 
-        shopName: shop ? shop.name : null 
-      };
-    }
-  }
-
-  if (!user) {
-    return apiResponse.error(res, 'User not found or invalid session', 401);
-  }
-
+  const user = await authService.findSessionUser(sub);
+  if (!user || !user.isActive) throw unauthorized('Session is no longer valid');
   req.user = user;
   next();
-}
+});

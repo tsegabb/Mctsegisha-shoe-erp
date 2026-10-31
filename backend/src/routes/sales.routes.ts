@@ -1,19 +1,33 @@
 import { Router } from 'express';
-import { salesController } from '../controllers/sales.controller.ts';
+import { cashController, reportsController, salesController } from '../controllers/sales.controller.ts';
 import { authMiddleware } from '../middlewares/auth.middleware.ts';
 import { requireRole } from '../middlewares/roleGuard.middleware.ts';
 import { validate } from '../middlewares/validate.middleware.ts';
-import { createSaleSchema, processReturnSchema } from '../validators/sale.validator.ts';
+import { MANAGEMENT_ROLES, POS_ROLES } from '../constants/domain.ts';
+import { cashActivitySchema, cashDropSchema, cashSummarySchema, openingFloatSchema } from '../validators/cash.validator.ts';
+import { createSaleSchema, listSalesSchema, processReturnSchema, reconcileSchema } from '../validators/sale.validator.ts';
+import { z } from 'zod';
+import { optionalFilterUuid } from '../validators/common.validator.ts';
 
-const router = Router();
+const pos = requireRole(...POS_ROLES);
+const manage = requireRole(...MANAGEMENT_ROLES);
 
-// Apply auth check to all sales routes
-router.use(authMiddleware);
+export const salesRouter = Router();
+salesRouter.use(authMiddleware, pos);
+salesRouter.get('/', validate(listSalesSchema), salesController.list);
+salesRouter.get('/reconcile', manage, validate(reconcileSchema), salesController.reconcile);
+salesRouter.post('/', validate(createSaleSchema), salesController.create);
+salesRouter.post('/return', manage, validate(processReturnSchema), salesController.processReturn);
 
-router.get('/', salesController.getSales);
-router.get('/reconcile', requireRole(['Admin', 'Manager']), salesController.reconcile);
-router.post('/', validate(createSaleSchema), salesController.createSale);
-router.post('/return', requireRole(['Admin', 'Manager']), validate(processReturnSchema), salesController.processReturn);
+export const cashRouter = Router();
+cashRouter.use(authMiddleware, pos);
+cashRouter.get('/summary', validate(cashSummarySchema), cashController.summary);
+cashRouter.post('/drop', validate(cashDropSchema), cashController.drop);
+cashRouter.post('/float', validate(openingFloatSchema), cashController.float);
+cashRouter.post('/activity', validate(cashActivitySchema), cashController.activity);
 
-export default router;
-
+const dashQuery = z.object({ query: z.object({ warehouseId: optionalFilterUuid, shopId: optionalFilterUuid }) });
+export const reportsRouter = Router();
+reportsRouter.get('/stats', authMiddleware, manage, validate(dashQuery), reportsController.stats);
+reportsRouter.get('/dashboard', authMiddleware, manage, validate(dashQuery), reportsController.dashboard);
+reportsRouter.get('/reports/dashboard', authMiddleware, manage, validate(dashQuery), reportsController.dashboard);

@@ -1,15 +1,12 @@
-export interface UserSession {
+import type { Role } from '../constants/domain.ts';
+
+export interface AuthUser {
   id: string;
   name: string;
   email: string;
-  role: 'Admin' | 'Sales Staff' | 'Warehouse Staff' | 'Manager';
-  shopId?: string | null;
-  shopName?: string | null;
-}
-
-export interface AuthResponse {
-  success: boolean;
-  user?: UserSession;
-  token?: string;
-  error?: string;
+  phone: string | null;
+  role: Role;
+  shopId: string | null;
+  shopName: string | null;
+  isActive: boolean;
 }

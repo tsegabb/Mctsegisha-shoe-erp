@@ -1,119 +1,29 @@
-import { Request, Response } from 'express';
-import { authService } from '../services/auth.service.ts';
+import { asyncHandler } from '../utils/asyncHandler.ts';
 import { apiResponse } from '../utils/apiResponse.ts';
-import crypto from 'crypto';
-
-function generateId(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  }
-}
+import { authService } from '../services/auth.service.ts';
+import { usersService } from '../services/users.service.ts';
+import type { CreateUserInput, UpdateUserInput } from '../validators/auth.validator.ts';
 
 export const authController = {
-  async login(req: Request, res: Response) {
-    try {
-      const { email, password } = req.body;
-      if (!email || !password) {
-        return apiResponse.error(res, 'Email and password are required', 400);
-      }
-      
-      const result = await authService.login(email, password);
-      if (!result) {
-        return apiResponse.error(res, 'Invalid email or password', 401);
-      }
-      
-      return apiResponse.success(res, result);
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  },
+  login: asyncHandler(async (req, res) => {
+    const { email, password } = req.valid!.body;
+    apiResponse.success(res, await authService.login(email, password));
+  }),
+  me: asyncHandler(async (req, res) => apiResponse.success(res, await authService.me(req.user!))),
+  changePassword: asyncHandler(async (req, res) => {
+    await authService.changePassword(req.user!, req.valid!.body.currentPassword, req.valid!.body.newPassword);
+    apiResponse.success(res, { changed: true });
+  }),
 
-  async me(req: Request, res: Response) {
-    try {
-      const userId = req.headers['x-user-id'] as string;
-      if (!userId) {
-        return apiResponse.error(res, 'Not authenticated', 401);
-      }
-      
-      const result = await authService.getUserById(userId);
-      if (!result) {
-        return apiResponse.error(res, 'User not found', 404);
-      }
-      
-      return apiResponse.success(res, result);
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  },
-
-  async listUsers(req: Request, res: Response) {
-    try {
-      const users = await authService.getAllUsers();
-      return apiResponse.success(res, users);
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  },
-
-  async createUser(req: Request, res: Response) {
-    try {
-      const { name, email, phone, password, role, shopId } = req.body;
-      if (!name || !role) {
-        return apiResponse.error(res, 'Name and role are required', 400);
-      }
-      
-      const cleanPhone = (phone || '').trim();
-      const finalEmail = (email || '').trim() || (cleanPhone ? `${cleanPhone.replace(/\s+/g, '')}@store.com` : `${name.toLowerCase().replace(/\s+/g, '')}@store.com`);
-
-      const id = generateId();
-      const user = await authService.createUser({ 
-        id, 
-        name, 
-        email: finalEmail, 
-        phone: cleanPhone, 
-        password: password || 'user123', 
-        role, 
-        shopId: shopId || null 
-      });
-      return apiResponse.success(res, user, 201);
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  },
-
-  async updateUser(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const { name, email, role, shopId } = req.body;
-      const updated = await authService.updateUser(id, { name, email, role, shopId });
-      if (!updated) {
-        return apiResponse.error(res, 'User not found', 404);
-      }
-      return apiResponse.success(res, updated);
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  },
-
-  async deleteUser(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      if (req.user && req.user.id === id) {
-        return apiResponse.error(res, 'Action forbidden: You cannot delete your own active administrator account.', 400);
-      }
-      const success = await authService.deleteUser(id);
-      if (!success) {
-        return apiResponse.error(res, 'User not found', 404);
-      }
-      return apiResponse.success(res, { success: true, deletedId: id });
-    } catch (err: any) {
-      return apiResponse.error(res, err.message);
-    }
-  }
-
+  listUsers: asyncHandler(async (_req, res) => apiResponse.success(res, await usersService.list())),
+  createUser: asyncHandler(async (req, res) => apiResponse.success(res, await usersService.create(req.user!, req.valid!.body as CreateUserInput), 201)),
+  updateUser: asyncHandler(async (req, res) => apiResponse.success(res, await usersService.update(req.user!, req.valid!.params.id, req.valid!.body as UpdateUserInput))),
+  deleteUser: asyncHandler(async (req, res) => {
+    await usersService.remove(req.user!, req.valid!.params.id);
+    apiResponse.success(res, { deletedId: req.valid!.params.id });
+  }),
+  resetPassword: asyncHandler(async (req, res) => {
+    await usersService.resetPassword(req.user!, req.valid!.params.id, req.valid!.body.newPassword);
+    apiResponse.success(res, { reset: true });
+  }),
 };

@@ -1,28 +1,34 @@
 import { Router } from 'express';
-import { productsController } from '../controllers/products.controller.ts';
+import { productsController as c } from '../controllers/products.controller.ts';
 import { authMiddleware } from '../middlewares/auth.middleware.ts';
 import { requireRole } from '../middlewares/roleGuard.middleware.ts';
 import { validate } from '../middlewares/validate.middleware.ts';
-import { createProductSchema, updateProductSchema, createBrandSchema } from '../validators/product.validator.ts';
+import { MANAGEMENT_ROLES } from '../constants/domain.ts';
+import {
+  addFromCatalogSchema, createBrandSchema, createCategorySchema, createProductSchema, listProductsSchema, updateProductSchema,
+} from '../validators/product.validator.ts';
+import { idParams } from '../validators/common.validator.ts';
+
+const manage = requireRole(...MANAGEMENT_ROLES);
+
+export const brandsRouter = Router();
+brandsRouter.use(authMiddleware);
+brandsRouter.get('/', c.brands);
+brandsRouter.post('/', manage, validate(createBrandSchema), c.createBrand);
+
+export const categoriesRouter = Router();
+categoriesRouter.use(authMiddleware);
+categoriesRouter.get('/', c.categories);
+categoriesRouter.post('/', manage, validate(createCategorySchema), c.createCategory);
 
 const router = Router();
-
-// Master Catalog operations
-router.get('/master-catalog', productsController.getMasterCatalog);
-router.post('/add-from-catalog', authMiddleware, requireRole(['Admin', 'Manager']), productsController.addFromCatalog);
-
-// List operations (public/all employees)
-router.get('/', productsController.getProducts);
-router.get('/brands', productsController.getBrands);
-router.get('/categories', productsController.getCategories);
-
-// Write operations (guarded by authentication & role checks)
-router.post('/', authMiddleware, requireRole(['Admin', 'Manager']), validate(createProductSchema), productsController.createProduct);
-router.put('/:id', authMiddleware, requireRole(['Admin', 'Manager']), validate(updateProductSchema), productsController.updateProduct);
-router.delete('/:id', authMiddleware, requireRole(['Admin', 'Manager']), productsController.deleteProduct);
-
-router.post('/brands', authMiddleware, requireRole(['Admin', 'Manager']), validate(createBrandSchema), productsController.createBrand);
-router.post('/categories', authMiddleware, requireRole(['Admin', 'Manager']), productsController.createCategory);
-
+router.use(authMiddleware);
+router.get('/master-catalog', c.masterCatalog);
+router.post('/add-from-catalog', manage, validate(addFromCatalogSchema), c.addFromCatalog);
+router.use('/brands', brandsRouter); // legacy aliases
+router.use('/categories', categoriesRouter);
+router.get('/', validate(listProductsSchema), c.list);
+router.post('/', manage, validate(createProductSchema), c.create);
+router.put('/:id', manage, validate(updateProductSchema), c.update);
+router.delete('/:id', manage, validate(idParams), c.remove);
 export default router;
-

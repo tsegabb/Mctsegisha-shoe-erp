@@ -85,7 +85,7 @@ export default function LoginView({ onLoginSuccess, triggerToast }: LoginViewPro
                 type="email" 
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="owner@fidelpharma.com"
+                placeholder="owner@soleflow.com"
                 className="w-full bg-[#181b28] border border-[#262b3f] rounded-xl py-2 pl-9 pr-4 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-medium"
                 disabled={loading}
               />
@@ -109,7 +109,7 @@ export default function LoginView({ onLoginSuccess, triggerToast }: LoginViewPro
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 aria-label={showPassword ? "Hide password" : "Show password"}
-                className="absolute right-3 top-2.5 text-slate-500 hover:text-white"
+                className="absolute right-3 top-2.5 text-slate-500 hover:text-white cursor-pointer"
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -125,6 +125,37 @@ export default function LoginView({ onLoginSuccess, triggerToast }: LoginViewPro
             <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
           </button>
         </form>
+
+        {/* Demo Credentials Helper */}
+        <div className="mt-6 pt-5 border-t border-[#1e2233] space-y-2">
+          <p className="text-[11px] font-semibold text-slate-400 text-center uppercase tracking-wider">
+            Quick Fill Credentials
+          </p>
+          <div className="grid grid-cols-2 gap-2 text-[11px]">
+            <button
+              type="button"
+              onClick={() => {
+                setEmail('owner@soleflow.com');
+                setPassword('SoleFlow#Admin2026!');
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-[#181b28] hover:bg-indigo-950/40 border border-[#262b3f] hover:border-indigo-500/40 text-left transition-colors cursor-pointer group"
+            >
+              <div className="font-bold text-indigo-400 group-hover:text-indigo-300">Owner / Admin</div>
+              <div className="text-[10px] text-slate-500 truncate">owner@soleflow.com</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEmail('cashier@soleflow.com');
+                setPassword('SoleFlow#Cashier2026!');
+              }}
+              className="px-2.5 py-1.5 rounded-lg bg-[#181b28] hover:bg-indigo-950/40 border border-[#262b3f] hover:border-indigo-500/40 text-left transition-colors cursor-pointer group"
+            >
+              <div className="font-bold text-indigo-400 group-hover:text-indigo-300">Branch Cashier</div>
+              <div className="text-[10px] text-slate-500 truncate">cashier@soleflow.com</div>
+            </button>
+          </div>
+        </div>
 
       </motion.div>
     </main>
