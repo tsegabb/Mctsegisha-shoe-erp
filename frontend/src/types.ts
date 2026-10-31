@@ -196,6 +196,16 @@ export interface ShopBreakdownItem {
   totalProfit: number;
 }
 
+export type PaymentMethod =
+  | 'cash'
+  | 'card'
+  | 'mobile_money'
+  | 'bank_transfer'
+  | 'credit'
+  | 'other'
+  | 'telebirr'
+  | 'cbe_birr';
+
 export interface Sale {
   id: string;
   variantId: string;
@@ -204,7 +214,7 @@ export interface Sale {
   sellingPrice: number;
   costPrice: number;
   profit: number;
-  paymentMethod?: string;
+  paymentMethod?: PaymentMethod | string;
   status?: string;
   returnedQty?: number;
   returnedAmount?: number;

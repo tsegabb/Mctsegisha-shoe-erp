@@ -19,9 +19,11 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
-  Printer
+  Printer,
+  CreditCard,
+  Landmark
 } from 'lucide-react';
-import { Sale, Variant, Warehouse } from '../types.ts';
+import { Sale, Variant, Warehouse, PaymentMethod } from '../types.ts';
 import { formatPrice } from '../utils/formatters.ts';
 import { LoadingSpinner, EmptyState } from './common/UIStates.tsx';
 
@@ -164,7 +166,20 @@ export default function SalesView({
   // Cart state initialized empty
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'telebirr'>('cash');
+  const formatPaymentMethodLabel = (method?: string): string => {
+    if (!method) return 'Cash';
+    const m = method.toLowerCase();
+    if (m === 'telebirr') return 'Telebirr';
+    if (m === 'cbe_birr' || m === 'cbebirr' || m === 'cbe') return 'CBE Birr';
+    if (m === 'mobile_money') return 'Mobile Money';
+    if (m === 'bank_transfer') return 'Bank Transfer';
+    if (m === 'card') return 'Card';
+    if (m === 'credit') return 'Credit';
+    if (m === 'cash') return 'Cash';
+    return method.replace(/_/g, ' ');
+  };
+
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | 'cash' | 'telebirr' | 'cbe_birr' | 'card'>('cash');
   const [includeVat, setIncludeVat] = useState(true);
   const [customerInfoOpen, setCustomerInfoOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -176,9 +191,10 @@ export default function SalesView({
   const [completedReceipt, setCompletedReceipt] = useState<any | null>(null);
   const [completedToast, setCompletedToast] = useState<{ title: string; message: string } | null>(null);
 
-  // History date filters
+  // History filters
   const [historyFromDate, setHistoryFromDate] = useState('');
   const [historyToDate, setHistoryToDate] = useState('');
+  const [historyPaymentMethod, setHistoryPaymentMethod] = useState<string>('all');
   const [selectedSale, setSelectedSale] = useState<any | null>(null);
 
   // Return Process modal state
@@ -385,7 +401,7 @@ export default function SalesView({
         subtotal: subtotal,
         vat: vatAmount,
         totalAmount: totalAmount,
-        paymentMethod: paymentMethod === 'telebirr' ? 'Telebirr' : 'Cash'
+        paymentMethod: formatPaymentMethodLabel(paymentMethod)
       };
 
       setCompletedReceipt(newReceipt);
@@ -454,8 +470,16 @@ export default function SalesView({
     };
   });
 
-  // Filter sales list by date range if provided
+  // Filter sales list by date range and payment method if provided
   const activeSales = formattedSalesList.filter(item => {
+    if (historyPaymentMethod !== 'all') {
+      const pm = (item.paymentMethod || 'cash').toLowerCase();
+      if (historyPaymentMethod === 'cbe_birr') {
+        if (pm !== 'cbe_birr' && pm !== 'cbe' && pm !== 'cbebirr') return false;
+      } else if (pm !== historyPaymentMethod) {
+        return false;
+      }
+    }
     if (!historyFromDate && !historyToDate) return true;
     const itemTime = new Date(item.rawDate).getTime();
     if (historyFromDate) {
@@ -475,7 +499,7 @@ export default function SalesView({
 
   useEffect(() => {
     setSalesPage(1);
-  }, [historyFromDate, historyToDate]);
+  }, [historyFromDate, historyToDate, historyPaymentMethod]);
 
   const paginatedSales = useMemo(() => {
     const start = (salesPage - 1) * salesPageSize;
@@ -594,10 +618,10 @@ export default function SalesView({
 
           </div>
 
-          {/* DATE FILTERS ROW */}
-          <div className="flex items-center space-x-3 text-xs">
-            <span className="text-slate-600 dark:text-slate-400 font-medium">From:</span>
-            <div className="relative flex items-center">
+          {/* DATE & PAYMENT FILTERS ROW */}
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <div className="flex items-center space-x-1.5">
+              <span className="text-slate-600 dark:text-slate-400 font-medium">From:</span>
               <input 
                 type="date"
                 value={historyFromDate}
@@ -606,8 +630,8 @@ export default function SalesView({
               />
             </div>
 
-            <span className="text-slate-600 dark:text-slate-400 font-medium">To:</span>
-            <div className="relative flex items-center">
+            <div className="flex items-center space-x-1.5">
+              <span className="text-slate-600 dark:text-slate-400 font-medium">To:</span>
               <input 
                 type="date"
                 value={historyToDate}
@@ -616,9 +640,27 @@ export default function SalesView({
               />
             </div>
 
-            {(historyFromDate || historyToDate) && (
+            <div className="flex items-center space-x-1.5">
+              <span className="text-slate-600 dark:text-slate-400 font-medium">Payment:</span>
+              <select
+                value={historyPaymentMethod}
+                onChange={(e) => setHistoryPaymentMethod(e.target.value)}
+                className="bg-white dark:bg-[#12141e] border border-slate-200 dark:border-[#1e2233] rounded-xl px-3 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 font-medium cursor-pointer"
+              >
+                <option value="all">All Methods</option>
+                <option value="cash">Cash</option>
+                <option value="telebirr">Telebirr</option>
+                <option value="cbe_birr">CBE Birr</option>
+                <option value="card">Card</option>
+                <option value="mobile_money">Mobile Money</option>
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            {(historyFromDate || historyToDate || historyPaymentMethod !== 'all') && (
               <button 
-                onClick={() => { setHistoryFromDate(''); setHistoryToDate(''); }}
+                onClick={() => { setHistoryFromDate(''); setHistoryToDate(''); setHistoryPaymentMethod('all'); }}
                 className="px-2.5 py-1.5 bg-slate-100 dark:bg-[#181b28] hover:bg-slate-200 dark:hover:bg-[#22273a] text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
               >
                 Clear Filter
@@ -662,8 +704,8 @@ export default function SalesView({
                             {formatPrice(sale.totalAmount, true)} ETB
                           </td>
                           <td className="p-4">
-                            <span className="px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#181b28] border border-slate-200 dark:border-[#262b3f] text-slate-700 dark:text-slate-300 text-[10px] font-mono uppercase">
-                              {sale.paymentMethod || 'cash'}
+                            <span className="px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#181b28] border border-slate-200 dark:border-[#262b3f] text-slate-700 dark:text-slate-300 text-[10px] font-medium">
+                              {formatPaymentMethodLabel(sale.paymentMethod)}
                             </span>
                           </td>
                           <td className="p-4">
@@ -959,12 +1001,12 @@ export default function SalesView({
                 </div>
               </div>
 
-              {/* PAYMENT METHOD SELECTOR (Cash vs TeleBirr) */}
-              <div className="grid grid-cols-2 gap-2 pt-1">
+              {/* PAYMENT METHOD SELECTOR (Cash, Telebirr, CBE Birr, Card) */}
+              <div className="grid grid-cols-4 gap-1.5 pt-1">
                 <button
                   type="button"
                   onClick={() => setPaymentMethod('cash')}
-                  className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 cursor-pointer transition-colors ${
+                  className={`py-2 px-1 rounded-xl text-[11px] font-bold flex flex-col items-center justify-center space-y-1 cursor-pointer transition-colors ${
                     paymentMethod === 'cash'
                       ? 'bg-[#6366f1] text-white shadow-md'
                       : 'bg-slate-50 dark:bg-[#0b0c14] border border-slate-200 dark:border-[#1e2233] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
@@ -977,14 +1019,40 @@ export default function SalesView({
                 <button
                   type="button"
                   onClick={() => setPaymentMethod('telebirr')}
-                  className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 cursor-pointer transition-colors ${
+                  className={`py-2 px-1 rounded-xl text-[11px] font-bold flex flex-col items-center justify-center space-y-1 cursor-pointer transition-colors ${
                     paymentMethod === 'telebirr'
                       ? 'bg-[#6366f1] text-white shadow-md'
                       : 'bg-slate-50 dark:bg-[#0b0c14] border border-slate-200 dark:border-[#1e2233] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   <Smartphone className="w-3.5 h-3.5" />
-                  <span>TeleBirr</span>
+                  <span>Telebirr</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('cbe_birr')}
+                  className={`py-2 px-1 rounded-xl text-[11px] font-bold flex flex-col items-center justify-center space-y-1 cursor-pointer transition-colors ${
+                    paymentMethod === 'cbe_birr'
+                      ? 'bg-[#6366f1] text-white shadow-md'
+                      : 'bg-slate-50 dark:bg-[#0b0c14] border border-slate-200 dark:border-[#1e2233] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Landmark className="w-3.5 h-3.5" />
+                  <span>CBE Birr</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('card')}
+                  className={`py-2 px-1 rounded-xl text-[11px] font-bold flex flex-col items-center justify-center space-y-1 cursor-pointer transition-colors ${
+                    paymentMethod === 'card'
+                      ? 'bg-[#6366f1] text-white shadow-md'
+                      : 'bg-slate-50 dark:bg-[#0b0c14] border border-slate-200 dark:border-[#1e2233] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Card</span>
                 </button>
               </div>
 
@@ -1029,8 +1097,8 @@ export default function SalesView({
                 </p>
                 <div className="flex items-center space-x-2 mt-3">
                   <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-xs">{selectedSale.status}</span>
-                  <span className="px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#181b28] border border-slate-200 dark:border-[#262b3f] text-slate-700 dark:text-slate-300 text-[11px] font-mono uppercase">
-                    {selectedSale.paymentMethod || 'cash'}
+                  <span className="px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-[#181b28] border border-slate-200 dark:border-[#262b3f] text-slate-700 dark:text-slate-300 text-[11px] font-medium">
+                    {formatPaymentMethodLabel(selectedSale.paymentMethod)}
                   </span>
                 </div>
               </div>

@@ -1,1 +1,0 @@
-SQL and schema migrations placeholder directory.

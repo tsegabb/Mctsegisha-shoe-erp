@@ -1,30 +1,22 @@
 import { z } from 'zod';
+import { optionalFilterUuid, paymentMethodField, positiveMoney, money, snakeEnum, uuid } from './common.validator.ts';
+import { CASH_ACTIVITY_TYPES } from '../constants/domain.ts';
 
-export const cashDropSchema = z.object({
-  body: z.object({
-    amount: z.number({ message: 'Amount is required' }).positive({ message: 'Amount must be greater than 0' }),
-    note: z.string().optional(),
-    shopId: z.string().optional(),
-    userName: z.string().optional()
-  })
-});
+const note = z.string().trim().max(500).optional();
 
-export const openingFloatSchema = z.object({
-  body: z.object({
-    amount: z.number({ message: 'Amount is required' }).nonnegative({ message: 'Amount cannot be negative' }),
-    note: z.string().optional(),
-    shopId: z.string().optional(),
-    userName: z.string().optional()
-  })
-});
+export const cashSummarySchema = z.object({ query: z.object({ shopId: optionalFilterUuid, warehouseId: optionalFilterUuid }) });
+
+export const cashDropSchema = z.object({ body: z.object({ amount: positiveMoney, note, shopId: uuid.optional() }) });
+export const openingFloatSchema = z.object({ body: z.object({ amount: money, note, shopId: uuid.optional() }) });
 
 export const cashActivitySchema = z.object({
   body: z.object({
-    type: z.string({ message: 'Activity type is required' }).min(1),
-    amount: z.number({ message: 'Amount is required' }),
-    method: z.string().optional().default('Cash'),
-    note: z.string().optional(),
-    shopId: z.string().optional(),
-    userName: z.string().optional()
-  })
+    type: snakeEnum(CASH_ACTIVITY_TYPES),
+    amount: z.number().finite().min(-999_999_999.99).max(999_999_999.99),
+    method: paymentMethodField.default('cash'),
+    note,
+    shopId: uuid.optional(),
+  }).refine((b) => b.type === 'adjustment' || b.amount > 0, { message: 'Amount must be positive (direction is implied by type)', path: ['amount'] }),
 });
+
+export type CashActivityInput = z.infer<typeof cashActivitySchema>['body'];

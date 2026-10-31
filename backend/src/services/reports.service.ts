@@ -71,8 +71,15 @@ export const reportsService = {
                       FROM sales s WHERE ${COUNTED_SALE} GROUP BY s.warehouse_id) sa ON sa.warehouse_id = w.id
                     ${sc} ORDER BY w.name`, p.values); })();
 
-    const [t, lc, util, mv, br, bs, hist, sh, sw, low] = await Promise.all([
-      totals, lowCount, utilisation, movements, brands, best, history, shops, salesWindows(scope), lowStockVariants(threshold, 100),
+    const paymentMethods = (() => { const p = new Params();
+      return query(`SELECT s.payment_method AS method, COUNT(*)::int AS count,
+                           COALESCE(SUM(${NET_REVENUE}), 0) AS revenue,
+                           COALESCE(SUM(${NET_PROFIT}), 0) AS profit
+                    FROM sales s WHERE ${COUNTED_SALE} ${salesScope(p, scope)}
+                    GROUP BY s.payment_method ORDER BY revenue DESC`, p.values); })();
+
+    const [t, lc, util, mv, br, bs, hist, sh, sw, low, pm] = await Promise.all([
+      totals, lowCount, utilisation, movements, brands, best, history, shops, salesWindows(scope), lowStockVariants(threshold, 100), paymentMethods,
     ]);
 
     const shopBreakdown = sh.rows.map((r) => ({
@@ -97,6 +104,7 @@ export const reportsService = {
       monthlyProfit: num(s.monthly_profit), yearlyProfit: num(s.yearly_profit),
       bestSellers: bs.rows.map((r) => ({ name: r.name, brand: r.brand, quantity: r.quantity, revenue: num(r.revenue), profit: num(r.profit) })),
       revenueHistory: hist.rows.map((r) => ({ date: r.date, revenue: num(r.revenue), profit: num(r.profit) })),
+      paymentBreakdown: pm.rows.map((r) => ({ method: r.method, count: r.count, revenue: num(r.revenue), profit: num(r.profit) })),
       shopBreakdown,
       topPerformingShop: [...shopBreakdown].sort((a, b) => b.totalRevenue - a.totalRevenue)[0] ?? null,
     };

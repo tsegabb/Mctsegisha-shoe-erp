@@ -287,6 +287,40 @@ export default function ReportsView({
   const lowStockVariants = variants.filter(v => v.currentStock <= ((v as any).reorderLevel || 15));
   const criticalStockVariants = variants.filter(v => v.currentStock <= 5);
 
+  const formatPaymentLabel = (method?: string): string => {
+    if (!method) return 'Cash';
+    const m = method.toLowerCase();
+    if (m === 'telebirr') return 'Telebirr';
+    if (m === 'cbe_birr' || m === 'cbebirr' || m === 'cbe') return 'CBE Birr';
+    if (m === 'mobile_money') return 'Mobile Money';
+    if (m === 'bank_transfer') return 'Bank Transfer';
+    if (m === 'card') return 'Card';
+    if (m === 'credit') return 'Credit';
+    if (m === 'cash') return 'Cash';
+    return method.replace(/_/g, ' ');
+  };
+
+  // Payment method breakdown calculation (Telebirr, CBE Birr, Cash, Card, etc.)
+  const paymentMethodDataMap = new Map<string, { method: string; label: string; count: number; revenue: number; profit: number }>();
+  activeSales.forEach(s => {
+    const rawMethod = s.paymentMethod || 'cash';
+    const label = formatPaymentLabel(rawMethod);
+    const rev = Number(s.totalAmount || (s.quantity * (s.sellingPrice || 0)) || 0);
+    const cost = Number(s.quantity * (s.unitCost || s.costPrice || (s.sellingPrice ? s.sellingPrice * 0.6 : 0)));
+    const prf = s.profit !== undefined && s.profit !== null ? Number(s.profit) : (rev - cost);
+
+    if (!paymentMethodDataMap.has(label)) {
+      paymentMethodDataMap.set(label, { method: rawMethod, label, count: 1, revenue: rev, profit: prf });
+    } else {
+      const item = paymentMethodDataMap.get(label)!;
+      item.count += 1;
+      item.revenue += rev;
+      item.profit += prf;
+    }
+  });
+
+  const paymentBreakdownData = Array.from(paymentMethodDataMap.values()).sort((a, b) => b.revenue - a.revenue);
+
   const handleExportCSV = () => {
     let csvData = '';
     const filename = `report_${activeTab}_${fromDate}_to_${toDate}.csv`;
@@ -295,6 +329,11 @@ export default function ReportsView({
       csvData = 'Date/Group,Sales Qty,Revenue (ETB),Cost (ETB),Profit (ETB),Margin (%)\n';
       groupedRows.forEach(r => {
         csvData += `"${r.dateLabel}",${r.salesCount},${r.revenue.toFixed(2)},${r.cost.toFixed(2)},${r.profit.toFixed(2)},${r.margin.toFixed(1)}%\n`;
+      });
+      csvData += '\nPayment Method Breakdown\nMethod,Transactions,Total Revenue (ETB),Total Profit (ETB),Share (%)\n';
+      paymentBreakdownData.forEach(p => {
+        const share = totalRevenue > 0 ? (p.revenue / totalRevenue) * 100 : 0;
+        csvData += `"${p.label}",${p.count},${p.revenue.toFixed(2)},${p.profit.toFixed(2)},${share.toFixed(1)}%\n`;
       });
     } else if (activeTab === 'expiry') {
       csvData = 'Product Name,SKU,Size/Color,Stock,Status\n';
@@ -718,40 +757,112 @@ export default function ReportsView({
         
         {/* SALES TAB */}
         {activeTab === 'sales' && (
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-[#161926] text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider bg-slate-50 dark:bg-[#181b28]">
-                <th className="p-4 pl-6">DATE / PERIOD</th>
-                <th className="p-4">SALES QTY</th>
-                <th className="p-4">REVENUE</th>
-                <th className="p-4">EST. COST</th>
-                <th className="p-4">PROFIT</th>
-                <th className="p-4 pr-6 text-right">MARGIN %</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-[#1a1e2e] font-medium text-slate-800 dark:text-slate-200">
-              {groupedRows.length > 0 ? (
-                groupedRows.map((row) => (
-                  <tr key={row.key} className="hover:bg-slate-50 dark:hover:bg-[#181b28] transition-colors">
-                    <td className="p-4 pl-6 text-slate-900 dark:text-slate-300 font-mono font-bold">
-                      {row.dateLabel}
-                    </td>
-                    <td className="p-4 font-mono">{row.salesCount}</td>
-                    <td className="p-4 font-bold text-slate-900 dark:text-white font-mono">{formatPrice(row.revenue, true)} ETB</td>
-                    <td className="p-4 text-slate-500 dark:text-slate-400 font-mono">{formatPrice(row.cost, true)} ETB</td>
-                    <td className="p-4 text-emerald-600 dark:text-emerald-400 font-bold font-mono">{formatPrice(row.profit, true)} ETB</td>
-                    <td className="p-4 pr-6 text-right font-mono font-bold text-slate-700 dark:text-slate-300">{row.margin.toFixed(1)}%</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={6} className="p-16 text-center text-slate-500 font-medium">
-                    No sales recorded for the selected date range ({fromDate} to {toDate}).
-                  </td>
+          <>
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-[#161926] text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider bg-slate-50 dark:bg-[#181b28]">
+                  <th className="p-4 pl-6">DATE / PERIOD</th>
+                  <th className="p-4">SALES QTY</th>
+                  <th className="p-4">REVENUE</th>
+                  <th className="p-4">EST. COST</th>
+                  <th className="p-4">PROFIT</th>
+                  <th className="p-4 pr-6 text-right">MARGIN %</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-[#1a1e2e] font-medium text-slate-800 dark:text-slate-200">
+                {groupedRows.length > 0 ? (
+                  groupedRows.map((row) => (
+                    <tr key={row.key} className="hover:bg-slate-50 dark:hover:bg-[#181b28] transition-colors">
+                      <td className="p-4 pl-6 text-slate-900 dark:text-slate-300 font-mono font-bold">
+                        {row.dateLabel}
+                      </td>
+                      <td className="p-4 font-mono">{row.salesCount}</td>
+                      <td className="p-4 font-bold text-slate-900 dark:text-white font-mono">{formatPrice(row.revenue, true)} ETB</td>
+                      <td className="p-4 text-slate-500 dark:text-slate-400 font-mono">{formatPrice(row.cost, true)} ETB</td>
+                      <td className="p-4 text-emerald-600 dark:text-emerald-400 font-bold font-mono">{formatPrice(row.profit, true)} ETB</td>
+                      <td className="p-4 pr-6 text-right font-mono font-bold text-slate-700 dark:text-slate-300">{row.margin.toFixed(1)}%</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="p-16 text-center text-slate-500 font-medium">
+                      No sales recorded for the selected date range ({fromDate} to {toDate}).
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+
+            {/* PAYMENT METHOD BREAKDOWN TABLE (Telebirr, CBE Birr & Cash) */}
+            <div className="border-t border-slate-200 dark:border-[#1e2233] p-5 space-y-3 bg-slate-50/50 dark:bg-[#12141e]/50">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                    Payment Channels Breakdown
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    Separate transaction counts, revenue totals, and share by payment method (Telebirr, CBE Birr, Cash, Card).
+                  </p>
+                </div>
+                <span className="text-[11px] px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg border border-indigo-200 dark:border-indigo-800">
+                  {paymentBreakdownData.length} Channels Active
+                </span>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-[#1e2233] bg-white dark:bg-[#12141e]">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-[#161926] text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider bg-slate-50 dark:bg-[#181b28]">
+                      <th className="p-3 pl-4">PAYMENT METHOD</th>
+                      <th className="p-3 text-center">TRANSACTIONS</th>
+                      <th className="p-3">TOTAL REVENUE</th>
+                      <th className="p-3">TOTAL PROFIT</th>
+                      <th className="p-3 pr-4 text-right">SHARE %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#1a1e2e] font-medium text-slate-800 dark:text-slate-200">
+                    {paymentBreakdownData.length > 0 ? (
+                      paymentBreakdownData.map((pm) => {
+                        const share = totalRevenue > 0 ? (pm.revenue / totalRevenue) * 100 : 0;
+                        return (
+                          <tr key={pm.label} className="hover:bg-slate-50 dark:hover:bg-[#181b28] transition-colors">
+                            <td className="p-3 pl-4 font-bold text-slate-900 dark:text-white flex items-center space-x-2">
+                              <span className={`w-2.5 h-2.5 rounded-full ${
+                                pm.label === 'Telebirr'
+                                  ? 'bg-blue-500'
+                                  : pm.label === 'CBE Birr'
+                                  ? 'bg-purple-500'
+                                  : pm.label === 'Cash'
+                                  ? 'bg-emerald-500'
+                                  : 'bg-slate-400'
+                              }`} />
+                              <span>{pm.label}</span>
+                            </td>
+                            <td className="p-3 text-center font-mono">{pm.count}</td>
+                            <td className="p-3 font-bold font-mono text-slate-900 dark:text-white">
+                              {formatPrice(pm.revenue, true)} ETB
+                            </td>
+                            <td className="p-3 font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
+                              {formatPrice(pm.profit, true)} ETB
+                            </td>
+                            <td className="p-3 pr-4 text-right font-mono font-bold text-slate-700 dark:text-slate-300">
+                              {share.toFixed(1)}%
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="p-6 text-center text-slate-500 font-medium">
+                          No transactions recorded for this period.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
 
         {/* PROFIT TAB */}

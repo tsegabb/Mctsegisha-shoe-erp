@@ -1,5 +1,5 @@
 import { query, withTransaction, type Queryable } from '../config/db.ts';
-import { DEFAULT_COST_RATIO, MANAGEMENT_ROLES } from '../constants/domain.ts';
+import { DEFAULT_COST_RATIO, MANAGEMENT_ROLES, PAYMENT_METHODS } from '../constants/domain.ts';
 import { badRequest, conflict, forbidden, insufficientStock, notFound, unprocessable } from '../errors/AppError.ts';
 import { getGeneralSettings } from '../lib/settingsStore.ts';
 import type { AuthUser } from '../types/auth.types.ts';
@@ -163,16 +163,16 @@ export const salesService = {
     const by = (m: string) => rows.find((r) => r.method === m);
     const t = (m: string, k: 'today' | 'total') => num(by(m)?.[k]);
     const sum = (k: 'today' | 'total') => rows.reduce((a, r) => a + num(r[k]), 0);
-    const methods = Object.fromEntries(['cash', 'card', 'mobile_money', 'bank_transfer', 'credit', 'other'].map((m) => [m, { today: t(m, 'today'), historical: t(m, 'total') }]));
+    const methods = Object.fromEntries(PAYMENT_METHODS.map((m) => [m, { today: t(m, 'today'), historical: t(m, 'total') }]));
 
     return {
       reconciledAt: new Date().toISOString(),
       byMethod: methods,
       todaysCashSales: t('cash', 'today'), todaysDigitalSales: sum('today') - t('cash', 'today'), todaysTotalSales: sum('today'),
       historicalCashSales: t('cash', 'total'), historicalDigitalSales: sum('total') - t('cash', 'total'), historicalTotalSales: sum('total'),
-      // Legacy keys. The DB cannot tell Telebirr from CBE Birr (both are mobile_money), see AUDIT.md.
-      todaysTelebirrSales: t('mobile_money', 'today'), historicalTelebirrSales: t('mobile_money', 'total'),
-      todaysCbeSales: t('bank_transfer', 'today'), historicalCbeSales: t('bank_transfer', 'total'),
+      todaysTelebirrSales: t('telebirr', 'today'), historicalTelebirrSales: t('telebirr', 'total'),
+      todaysCbeBirrSales: t('cbe_birr', 'today'), historicalCbeBirrSales: t('cbe_birr', 'total'),
+      todaysCbeSales: t('cbe_birr', 'today'), historicalCbeSales: t('cbe_birr', 'total'),
       todaysCardSales: t('card', 'today'), historicalCardSales: t('card', 'total'),
       counts: { todayTotal: rows.reduce((a, r) => a + r.today_cnt, 0), historicalTotal: rows.reduce((a, r) => a + r.cnt, 0) },
     };

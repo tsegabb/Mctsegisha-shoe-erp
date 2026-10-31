@@ -51,8 +51,8 @@ export const ROLE_ALIASES: Record<string, Role> = {
 };
 export const MOVEMENT_ALIASES: Record<string, MovementType> = { incoming: 'in', outgoing: 'out' };
 export const PAYMENT_ALIASES: Record<string, PaymentMethod> = {
-  telebirr: 'mobile_money', cbe_birr: 'mobile_money', cbebirr: 'mobile_money', mobile: 'mobile_money',
-  mpesa: 'mobile_money', cbe: 'bank_transfer', bank: 'bank_transfer', transfer: 'bank_transfer',
+  telebirr: 'telebirr', cbe_birr: 'cbe_birr', cbebirr: 'cbe_birr', cbe: 'cbe_birr',
+  mobile: 'mobile_money', mpesa: 'mobile_money', bank: 'bank_transfer', transfer: 'bank_transfer',
   visa: 'card', mastercard: 'card',
 };
 

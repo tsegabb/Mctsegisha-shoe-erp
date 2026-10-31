@@ -62,7 +62,7 @@ export default function AppShell({
       case 'sales':
         return {
           title: 'Sales Transactions',
-          description: 'Historical register log, payment breakdowns (Cash/Telebirr/CBE/Card), and refunds.'
+          description: 'Historical register log, payment breakdowns (Cash/Telebirr/CBE Birr/Card), and refunds.'
         };
       case 'cash':
         return {

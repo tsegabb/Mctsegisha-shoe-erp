@@ -138,11 +138,13 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
   const todaysCashSales = summary?.todaysCashSales ?? 0;
   const todaysDigitalSales = summary?.todaysDigitalSales ?? 0;
   const todaysTelebirrSales = summary?.todaysTelebirrSales ?? 0;
+  const todaysCbeBirrSales = summary?.todaysCbeBirrSales ?? 0;
   const todaysOtherDigitalSales = summary?.todaysOtherDigitalSales ?? 0;
 
   const historicalCashSales = summary?.historicalCashSales ?? 0;
   const historicalDigitalSales = summary?.historicalDigitalSales ?? 0;
   const historicalTelebirrSales = summary?.historicalTelebirrSales ?? 0;
+  const historicalCbeBirrSales = summary?.historicalCbeBirrSales ?? 0;
   const historicalOtherDigitalSales = summary?.historicalOtherDigitalSales ?? 0;
 
   const openingFloat = summary?.openingFloat ?? 5000;
@@ -240,7 +242,7 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
                 +{todaysDigitalSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
               </h2>
               <p className="text-[11px] text-slate-500 font-medium mt-1">
-                Telebirr ({todaysTelebirrSales > 0 ? `+${todaysTelebirrSales.toLocaleString('en-US')} ETB` : '0.00'}) & Card
+                Telebirr ({todaysTelebirrSales > 0 ? `+${todaysTelebirrSales.toLocaleString('en-US')} ETB` : '0.00'}) & CBE Birr ({todaysCbeBirrSales > 0 ? `+${todaysCbeBirrSales.toLocaleString('en-US')} ETB` : '0.00'})
               </p>
             </>
           )}
@@ -274,7 +276,7 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
               <span>Consolidated Transaction Reconciliation & Digital Aggregation</span>
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Aggregated Telebirr and digital payment totals comparing daily shift activity against historical records.
+              Aggregated Telebirr, CBE Birr, and digital payment totals comparing daily shift activity against historical records.
             </p>
           </div>
           <span className="text-xs px-2.5 py-1 bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 font-bold rounded-lg border border-sky-200 dark:border-sky-800">
@@ -291,7 +293,7 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
                 <span>Telebirr Payments</span>
               </span>
               <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                Mobile Money
+                Telebirr
               </span>
             </div>
             <div className="pt-1">
@@ -308,27 +310,27 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
             </div>
           </div>
 
-          {/* CBE Birr & Card */}
+          {/* CBE Birr Payments */}
           <div className="bg-slate-50 dark:bg-[#181b28] border border-slate-200/80 dark:border-[#24293a] rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center space-x-1.5">
-                <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                <span>CBE Birr & Card</span>
+                <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                <span>CBE Birr Payments</span>
               </span>
-              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
-                Bank & Card
+              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
+                CBE Birr
               </span>
             </div>
             <div className="pt-1">
-              <div className="text-[11px] text-slate-500">Today's CBE & Card</div>
+              <div className="text-[11px] text-slate-500">Today's CBE Birr</div>
               <div className="text-sm font-extrabold font-mono text-slate-900 dark:text-white">
-                +{todaysOtherDigitalSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
+                +{todaysCbeBirrSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
               </div>
             </div>
             <div className="border-t border-slate-200/60 dark:border-slate-800 pt-1.5">
-              <div className="text-[11px] text-slate-500">Historical CBE & Card Total</div>
-              <div className="text-xs font-bold font-mono text-indigo-600 dark:text-indigo-400">
-                +{historicalOtherDigitalSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
+              <div className="text-[11px] text-slate-500">Historical CBE Birr Total</div>
+              <div className="text-xs font-bold font-mono text-purple-600 dark:text-purple-400">
+                +{historicalCbeBirrSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB
               </div>
             </div>
           </div>
@@ -496,9 +498,21 @@ export default function CashManagementView({ selectedBranch = 'Main Branch', tri
                           <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
                             tx.method.toLowerCase() === 'cash'
                               ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                              : tx.method.toLowerCase() === 'telebirr'
+                              ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+                              : tx.method.toLowerCase().includes('cbe')
+                              ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
                               : 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20'
                           }`}>
-                            {tx.method}
+                            {tx.method.toLowerCase() === 'telebirr'
+                              ? 'Telebirr'
+                              : tx.method.toLowerCase() === 'cbe_birr' || tx.method.toLowerCase().includes('cbe')
+                              ? 'CBE Birr'
+                              : tx.method.toLowerCase() === 'mobile_money'
+                              ? 'Mobile Money'
+                              : tx.method.toLowerCase() === 'bank_transfer'
+                              ? 'Bank Transfer'
+                              : tx.method}
                           </span>
                         </td>
                         <td className="py-3 px-2 text-slate-500 dark:text-slate-400 max-w-xs truncate">{tx.note || '-'}</td>

@@ -12,7 +12,10 @@ const TYPE_LABEL: Record<string, string> = {
   income: 'Income', expense: 'Expense', deposit: 'Deposit', withdrawal: 'Cash Drop', sale: 'Sale', refund: 'Refund',
   opening: 'Opening Float', closing: 'Closing', adjustment: 'Adjustment', pos_sale: 'POS Sale',
 };
-const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer', credit: 'Credit', other: 'Other' };
+const METHOD_LABEL: Record<string, string> = {
+  cash: 'Cash', card: 'Card', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer', credit: 'Credit', other: 'Other',
+  telebirr: 'Telebirr', cbe_birr: 'CBE Birr',
+};
 
 /** Cash leaving the drawer vs entering it. Amounts are stored as positive magnitudes; `adjustment` is signed. */
 const OUT: CashActivityType[] = ['withdrawal', 'expense', 'refund'];
@@ -70,10 +73,12 @@ export const cashService = {
       currentRegisterCash, openingFloat, cashDropsTotal,
       todaysCashSales: recon.todaysCashSales, todaysDigitalSales: recon.todaysDigitalSales,
       todaysTelebirrSales: recon.todaysTelebirrSales,
-      todaysOtherDigitalSales: recon.todaysDigitalSales - recon.todaysTelebirrSales,
+      todaysCbeBirrSales: recon.todaysCbeBirrSales,
+      todaysOtherDigitalSales: recon.todaysDigitalSales - recon.todaysTelebirrSales - recon.todaysCbeBirrSales,
       historicalCashSales: recon.historicalCashSales, historicalDigitalSales: recon.historicalDigitalSales,
       historicalTelebirrSales: recon.historicalTelebirrSales,
-      historicalOtherDigitalSales: recon.historicalDigitalSales - recon.historicalTelebirrSales,
+      historicalCbeBirrSales: recon.historicalCbeBirrSales,
+      historicalOtherDigitalSales: recon.historicalDigitalSales - recon.historicalTelebirrSales - recon.historicalCbeBirrSales,
       digitalBreakdown: recon.byMethod,
       activities,
     };

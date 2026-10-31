@@ -6,16 +6,23 @@ export interface CashSummary {
   todaysCashSales: number;
   todaysDigitalSales: number;
   todaysTelebirrSales?: number;
+  todaysCbeBirrSales?: number;
   todaysOtherDigitalSales?: number;
   historicalCashSales?: number;
   historicalDigitalSales?: number;
   historicalTelebirrSales?: number;
+  historicalCbeBirrSales?: number;
   historicalOtherDigitalSales?: number;
   digitalBreakdown?: {
-    telebirr: { today: number; historical: number };
-    cbe: { today: number; historical: number };
-    card: { today: number; historical: number };
-    other: { today: number; historical: number };
+    cash?: { today: number; historical: number };
+    telebirr?: { today: number; historical: number };
+    cbe_birr?: { today: number; historical: number };
+    cbe?: { today: number; historical: number };
+    card?: { today: number; historical: number };
+    mobile_money?: { today: number; historical: number };
+    bank_transfer?: { today: number; historical: number };
+    other?: { today: number; historical: number };
+    [key: string]: { today: number; historical: number } | undefined;
   };
   openingFloat: number;
   cashDropsTotal: number;

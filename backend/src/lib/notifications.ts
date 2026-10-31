@@ -547,6 +547,7 @@ export async function sendDailyReportTelegram(
   const salesCount = statsData?.dailySalesCount ?? 0;
   const cashSales = cashData?.todaysCashSales ?? 0;
   const telebirrSales = cashData?.todaysTelebirrSales ?? 0;
+  const cbeBirrSales = cashData?.todaysCbeBirrSales ?? 0;
   const digitalSales = cashData?.todaysDigitalSales ?? 0;
   const regCash = cashData?.currentRegisterCash ?? 0;
   const totalStock = statsData?.totalStock ?? 0;
@@ -576,6 +577,7 @@ export async function sendDailyReportTelegram(
 💳 <b>PAYMENT METHOD BREAKDOWN</b>
 • 💵 <b>Cash Sales:</b> ${Number(cashSales).toLocaleString('en-US', { minimumFractionDigits: 2 })} ETB
 • 📱 <b>Telebirr Sales:</b> ${Number(telebirrSales).toLocaleString('en-US', { minimumFractionDigits: 2 })} ETB
+• 🏦 <b>CBE Birr Sales:</b> ${Number(cbeBirrSales).toLocaleString('en-US', { minimumFractionDigits: 2 })} ETB
 • 💳 <b>Digital Sales Total:</b> ${Number(digitalSales).toLocaleString('en-US', { minimumFractionDigits: 2 })} ETB
 • 📥 <b>Current Cash Register:</b> ${Number(regCash).toLocaleString('en-US', { minimumFractionDigits: 2 })} ETB
 
