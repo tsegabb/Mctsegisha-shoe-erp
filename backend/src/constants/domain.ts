@@ -9,7 +9,7 @@ export const POS_ROLES: Role[] = ['owner', 'admin', 'manager', 'cashier', 'staff
 export const STOCK_ROLES: Role[] = ['owner', 'admin', 'manager', 'warehouse'];
 
 export const GENDERS = ['men', 'women', 'unisex', 'boys', 'girls', 'kids'] as const;
-export const PAYMENT_METHODS = ['cash', 'card', 'mobile_money', 'bank_transfer', 'credit', 'other'] as const;
+export const PAYMENT_METHODS = ['cash', 'card', 'mobile_money', 'bank_transfer', 'credit', 'other', 'telebirr', 'cbe_birr'] as const;
 export const SALE_STATUSES = ['completed', 'partially_returned', 'returned', 'refunded', 'cancelled', 'voided'] as const;
 export const MOVEMENT_TYPES = ['in', 'out', 'transfer', 'adjustment', 'sale', 'return', 'purchase', 'damage'] as const;
 export const ORDER_STATUSES = [
